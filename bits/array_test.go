@@ -1,5 +1,6 @@
 package bits
 
+/*
 import (
 	"testing"
 
@@ -53,3 +54,4 @@ func multibitsTestHelper(t *testing.T, a *BitArray) {
 func Test_BitArrayMultibits(t *testing.T) {
 
 }
+*/

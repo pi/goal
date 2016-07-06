@@ -1,7 +1,7 @@
 package bits
 
 //
-// Sparse bit array
+// BitSlice
 //
 
 import "github.com/ardente/goal/md"
@@ -13,7 +13,7 @@ type BitArray struct {
 
 func NewBitArray(len uint) *BitArray {
 	return &BitArray{
-		data: make([]uint, (len>>md.BitsPerUint)+1),
+		data: make([]uint, (len>>md.UintSizeShift)+1),
 		len:  len,
 	}
 }
@@ -26,8 +26,8 @@ func (a *BitArray) Put(index uint, value uint) {
 	if index >= a.len {
 		panic("bit array index out of bounds")
 	}
-	wi := index >> md.BitsPerUint
-	bi := index & md.UintBitsMask
+	wi := index >> md.UintSizeShift
+	bi := index & md.UintSizeMask
 	if (value & 1) == 0 {
 		a.data[wi] &= ^(1 << bi)
 	} else {
@@ -39,7 +39,7 @@ func (a *BitArray) Get(index uint) uint {
 	if index >= a.len {
 		panic("bit array index out of bounds")
 	}
-	return (a.data[index>>md.BitsPerUint] >> (index & md.UintBitsMask)) & 1
+	return (a.data[index>>md.UintSizeShift] >> (index & md.UintSizeMask)) & 1
 }
 
 func (a *BitArray) GetBits(from, to uint) uint {
@@ -56,13 +56,13 @@ func (a *BitArray) GetBits(from, to uint) uint {
 	} else {
 		valueMask = (1 << n) - 1
 	}
-	lp := from & md.UintBitsMask
-	if (from >> md.BitsPerUint) == (to >> md.BitsPerUint) {
+	lp := from & md.UintSizeMask
+	if (from >> md.UintSizeShift) == (to >> md.UintSizeShift) {
 		// bits in one uint
-		return (a.data[from>>md.BitsPerUint] >> lp) & valueMask
+		return (a.data[from>>md.UintSizeShift] >> lp) & valueMask
 	} else {
 		// bits in two uints
-		wi := from >> md.BitsPerUint
+		wi := from >> md.UintSizeShift
 		return ((a.data[wi] >> lp) | (a.data[wi+1] << (md.BitsPerUint - lp))) & valueMask
 	}
 }
