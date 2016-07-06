@@ -1,4 +1,6 @@
-package goal
+package bits
+
+import "github.com/ardente/goal/md"
 
 type BitBuffer struct {
 	Bits []byte
@@ -20,7 +22,7 @@ func NewBitBufferOn(bits []byte) *BitBuffer {
 }
 
 func Write(n, bits uint) {
-	if n > _BitsPerUint {
+	if n > md.BitsPerUint {
 		panic("invalid number of bits")
 	}
 
@@ -41,7 +43,7 @@ func (b *BitBuffer) SetPos(newPos uint) {
 }
 
 func (s *BitBuffer) Read(n uint) uint {
-	if n > _BitsPerUint {
+	if n > md.BitsPerUint {
 		panic("too many bits")
 	}
 	if ((s.pos + n) >> 4) > uint(len(s.Bits)) {

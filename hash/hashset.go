@@ -1,4 +1,4 @@
-package goal
+package hash
 
 type uintSetBucket struct {
 	bits    uint

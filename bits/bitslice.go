@@ -1,14 +1,15 @@
-package goal
+package bits
 
 //
 // Sparse bit slice
 //
+import "github.com/ardente/goal/md"
 
 const _BitsPerChunkSizeBits = 13
 const _BitsPerChunk = 1 << _BitsPerChunkSizeBits
 const _BitsPerChunkSizeMask = _BitsPerChunk - 1
 
-const _UintsPerChunk = _BitsPerChunk >> _UintSizeBits
+const _UintsPerChunk = _BitsPerChunk >> md.UintSizeBits
 
 type bitSliceChunk [_UintsPerChunk]uint
 
@@ -59,8 +60,8 @@ func (a *BitSlice) PutBit(index uint, value uint) {
 		chunk = new(bitSliceChunk)
 		a.chunks[chunkIndex] = chunk
 	}
-	wi := uint(index&_BitsPerChunkSizeMask) >> _BitsPerUint
-	bi := uint(index & _UintBitsMask)
+	wi := uint(index&_BitsPerChunkSizeMask) >> md.BitsPerUint
+	bi := uint(index & md.UintBitsMask)
 	if (value & 1) == 0 {
 		(*chunk)[wi] &= ^(1 << bi)
 	} else {
@@ -77,7 +78,7 @@ func (a *BitSlice) GetBit(index uint) uint {
 	if !exists {
 		return 0
 	}
-	return (((*chunk)[uint(index&_BitsPerChunkSizeMask)>>_BitsPerUint]) >> (index & _UintBitsMask)) & 1
+	return (((*chunk)[uint(index&_BitsPerChunkSizeMask)>>md.BitsPerUint]) >> (index & md.UintBitsMask)) & 1
 }
 
 func (a *BitSlice) uintFor(bitIndex uint) uint {
@@ -85,13 +86,13 @@ func (a *BitSlice) uintFor(bitIndex uint) uint {
 	if !exists {
 		return 0
 	} else {
-		return (*chunk)[uint(bitIndex&_BitsPerChunkSizeMask)>>_BitsPerUint]
+		return (*chunk)[uint(bitIndex&_BitsPerChunkSizeMask)>>md.BitsPerUint]
 	}
 }
 
 func (a *BitSlice) twoUintsFor(bitIndex uint) (uint, uint) {
 	ci := bitIndex >> _BitsPerChunkSizeBits
-	ui := uint(bitIndex&_BitsPerChunkSizeMask) >> _BitsPerUint
+	ui := uint(bitIndex&_BitsPerChunkSizeMask) >> md.BitsPerUint
 	chunk, exists := a.chunks[ci]
 	var lo uint
 	if !exists {
@@ -115,26 +116,26 @@ func (a *BitSlice) Get(from, to uint) uint {
 		panic("invalid index")
 	}
 	n := to - from + 1
-	if n > _BitsPerUint {
+	if n > md.BitsPerUint {
 		panic("invalid number of bits")
 	}
 	var valueMask uint
-	if n == _BitsPerUint {
+	if n == md.BitsPerUint {
 		valueMask = ^uint(0)
 	} else {
 		valueMask = (1 << n) - 1
 	}
-	lp := from & _UintBitsMask
+	lp := from & md.UintBitsMask
 	if lp == 0 {
 		// on uint boundary
 		return a.uintFor(from) & valueMask
-	} else if (from >> _BitsPerUint) == (to >> _BitsPerUint) {
+	} else if (from >> md.BitsPerUint) == (to >> md.BitsPerUint) {
 		// all bits in one uint
 		return (a.uintFor(from) >> lp) & valueMask
 	} else {
 		// bits in two uints
 		lo, hi := a.twoUintsFor(from)
-		return ((lo >> lp) | (hi << (_BitsPerUint - lp))) & valueMask
+		return ((lo >> lp) | (hi << (md.BitsPerUint - lp))) & valueMask
 	}
 }
 
@@ -148,7 +149,7 @@ func (a *BitSlice) PutBits(from, to, bits uint) {
 
 // Get bits with len
 func (a *BitSlice) ReadBits(from, n uint) uint {
-	if n > _BitsPerUint {
+	if n > md.BitsPerUint {
 		panic("too many bits to read")
 	}
 	return a.Get(from, from+n-1)

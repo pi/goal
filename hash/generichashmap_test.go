@@ -1,4 +1,4 @@
-package goal
+package hash
 
 // todo
 

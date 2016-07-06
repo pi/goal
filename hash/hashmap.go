@@ -1,4 +1,4 @@
-package goal
+package hash
 
 type uintHashMapEntry struct {
 	key, value uint

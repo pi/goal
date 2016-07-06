@@ -1,4 +1,4 @@
-package goal
+package hash
 
 type genericHashMapEntry struct {
 	key   uint
