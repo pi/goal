@@ -2,6 +2,7 @@ package goal
 
 import (
 	"testing"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -43,4 +44,12 @@ func Test_BitArray(t *testing.T) {
 			assert.Fail(t, "4")
 		}
 	}
+}
+
+func multibitsTestHelper(t *testing.T, a *BitArray) {
+
+}
+
+func Test_BitArrayMultibits(t *testing.T) {
+
 }
