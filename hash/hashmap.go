@@ -1,27 +1,39 @@
 package hash
 
-type uintHashMapEntry struct {
+//
+// UintMap
+// Dense map of uint->uint.
+// Implemented using extendible hashing mechanism
+//
+
+// prefix: uum
+
+import (
+	"github.com/ardente/goal/md"
+)
+
+type uumEntry struct {
 	key, value uint
 }
 
-type uintHashMapBucket struct {
+type uumBucket struct {
 	bits    uint
 	count   uint
-	entries [entriesPerHashBucket]uintHashMapEntry
+	entries [entriesPerHashBucket]uumEntry
 }
 
-type UintHashMapIterator struct {
-	m               *UintHashMap
+type UintMapIterator struct {
+	m               *UintMap
 	started         bool
 	curBucketIndex  int
 	curElementIndex int
 }
 
-func (it *UintHashMapIterator) Reset() {
+func (it *UintMapIterator) Reset() {
 	it.started = false
 }
 
-func (it *UintHashMapIterator) Next() bool {
+func (it *UintMapIterator) Next() bool {
 	if !it.started {
 		it.started = true
 		it.curBucketIndex = 0
@@ -54,7 +66,7 @@ func (it *UintHashMapIterator) Next() bool {
 }
 
 // Return current map key. Panic if the iterator has not been started
-func (it *UintHashMapIterator) CurKey() uint {
+func (it *UintMapIterator) CurKey() uint {
 	if !it.started {
 		panic("accessing unstarted iterator")
 	}
@@ -65,7 +77,7 @@ func (it *UintHashMapIterator) CurKey() uint {
 }
 
 // Return current map value. Panic if the iterator has not been started.
-func (it *UintHashMapIterator) Cur() uint {
+func (it *UintMapIterator) Cur() uint {
 	if !it.started {
 		panic("accessing unstarted iter")
 	}
@@ -78,94 +90,87 @@ func (it *UintHashMapIterator) Cur() uint {
 //
 // HashMap is uint64->uint64 map
 //
-type UintHashMap struct {
+type UintMap struct {
 	dirBits           uint
-	zeroEntry         uintHashMapEntry
+	zeroEntry         uumEntry
 	zeroEntryAssigned bool
-	dir               []*uintHashMapBucket
+	dir               []*uumBucket
 	count             uint
 }
 
-func NewUintHashMap(args ...interface{}) *UintHashMap {
-	m := &UintHashMap{}
-	initBits := uint(0)
+func NewUintMap(args ...interface{}) *UintMap {
+	m := &UintMap{}
+	initBits := uint(4)
 	if len(args) > 1 {
-		panic("usage: NewHashMap([sizeHint])")
+		panic("usage: NewUintMap([initDirBits])")
 	}
 	if len(args) == 1 {
-		var initSize uint
 		if v, ok := args[0].(uint); ok {
-			initSize = v
+			initBits = v
 		} else if v, ok := args[0].(int); ok {
-			initSize = uint(v)
+			initBits = uint(v)
 		} else if v, ok := args[0].(uint64); ok {
-			initSize = uint(v)
+			initBits = uint(v)
 		} else if v, ok := args[0].(int64); ok {
-			initSize = uint(v)
+			initBits = uint(v)
 		} else {
 			panic("expected integer init size")
 		}
-
-		for sz := uint(0); sz < initSize; {
-			sz *= 2
-			initBits *= 2
+		if initBits < 2 || initBits > (md.BitsPerUint-3) {
+			panic("invalid init bits")
 		}
 	}
-	if initBits < 2 {
-		initBits = defaultHashDirBits
-	} else if initBits > 62 {
-		initBits = 62
-	}
+
 	m.init(initBits)
 
 	return m
 }
 
-func (m *UintHashMap) init(bits uint) {
+func (m *UintMap) init(bits uint) {
 	initSize := 1 << bits
 	m.dirBits = bits
-	m.dir = make([]*uintHashMapBucket, initSize)
+	m.dir = make([]*uumBucket, initSize)
 	m.count = 0
 	m.zeroEntryAssigned = false
 
-	firstBucket := &uintHashMapBucket{}
+	firstBucket := &uumBucket{}
 
 	for i := 0; i < initSize; i++ {
 		m.dir[i] = firstBucket
 	}
 }
 
-func (m *UintHashMap) Clear() {
+func (m *UintMap) Clear() {
 	m.init(defaultHashDirBits)
 }
 
 // find value for key
-func (m *UintHashMap) Iterator() UintHashMapIterator {
-	return UintHashMapIterator{m: m}
+func (m *UintMap) Iterator() UintMapIterator {
+	return UintMapIterator{m: m}
 }
-func (m *UintHashMap) IncludesKey(key uint) bool {
+func (m *UintMap) IncludesKey(key uint) bool {
 	return m.find(key, false) != nil
 }
-func (m *UintHashMap) Get(key uint) uint {
+func (m *UintMap) Get(key uint) uint {
 	e := m.find(key, false)
 	if e == nil {
 		return 0
 	}
 	return e.value
 }
-func (m *UintHashMap) Put(key, value uint) {
+func (m *UintMap) Put(key, value uint) {
 	m.find(key, true).value = value
 }
-func (m *UintHashMap) Inc(key, delta uint) {
+func (m *UintMap) Inc(key, delta uint) {
 	m.find(key, true).value += delta
 }
-func (m *UintHashMap) Dec(key, delta uint) {
+func (m *UintMap) Dec(key, delta uint) {
 	m.find(key, true).value -= delta
 }
-func (m *UintHashMap) Exists(key uint) bool {
+func (m *UintMap) Exists(key uint) bool {
 	return m.find(key, false) != nil
 }
-func (m *UintHashMap) Delete(key uint) bool {
+func (m *UintMap) Delete(key uint) bool {
 	if key == 0 {
 		if m.zeroEntryAssigned {
 			m.zeroEntryAssigned = false
@@ -206,11 +211,11 @@ func (m *UintHashMap) Delete(key uint) bool {
 	}
 	return true
 }
-func (m *UintHashMap) Len() uint {
+func (m *UintMap) Len() uint {
 	return m.count
 }
 
-func (m *UintHashMap) split(key uint) {
+func (m *UintMap) split(key uint) {
 	h := uintHashCode(key)
 
 	for {
@@ -221,14 +226,14 @@ func (m *UintHashMap) split(key uint) {
 		}
 		newBits := splitBucket.bits + 1
 
-		var workBuckets [2]*uintHashMapBucket
-		workBuckets[0] = &uintHashMapBucket{bits: newBits}
-		workBuckets[1] = &uintHashMapBucket{bits: newBits}
+		var workBuckets [2]*uumBucket
+		workBuckets[0] = &uumBucket{bits: newBits}
+		workBuckets[1] = &uumBucket{bits: newBits}
 
 		if m.dirBits == splitBucket.bits {
 			// grow directory
 			newDirSize := len(m.dir) * 2
-			newDir := make([]*uintHashMapBucket, newDirSize)
+			newDir := make([]*uumBucket, newDirSize)
 			for index, b := range m.dir {
 				newDir[2*index] = b
 				newDir[2*index+1] = b
@@ -251,14 +256,10 @@ func (m *UintHashMap) split(key uint) {
 		}
 
 		// replace splitBucket with first work bucket
-		dirIndex = h >> (bitsPerHashCode - m.dirBits)
-		for {
-			if dirIndex == 0 || m.dir[dirIndex-1] != splitBucket {
-				break
-			}
-			dirIndex--
+		var di uint
+		for di = h >> (bitsPerHashCode - m.dirBits); di > 0 && m.dir[di-1] == splitBucket; di-- {
 		}
-		for i := dirIndex; i < uint(len(m.dir)); i++ {
+		for i, l := di, uint(len(m.dir)); i < l; i++ {
 			if m.dir[i] != splitBucket {
 				break
 			}
@@ -277,7 +278,7 @@ func (m *UintHashMap) split(key uint) {
 }
 
 // add entry for key (or reuse existing)
-func (m *UintHashMap) find(key uint, addIfNotExists bool) *uintHashMapEntry {
+func (m *UintMap) find(key uint, addIfNotExists bool) *uumEntry {
 	if key == 0 {
 		if !m.zeroEntryAssigned && addIfNotExists {
 			m.zeroEntryAssigned = true

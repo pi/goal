@@ -1,13 +1,25 @@
 package hash
 
-type uintSetBucket struct {
-	bits    uint
-	count   uint
-	entries [entriesPerHashBucket]uint
+//
+// UintSet
+// Dense set of uints. Implemented using extensive linear hashing algorithm.
+//
+
+// prefix: us
+
+type usBucket struct {
+	bits   uint
+	count  uint
+	values [entriesPerHashBucket]uint
+}
+
+type usmBucket struct {
+	usBucket
+	values [entriesPerHashBucket]string
 }
 
 type UintSetIterator struct {
-	s                               *UintHashSet
+	s                               *UintSet
 	started                         bool
 	curBucketIndex, curElementIndex int
 }
@@ -42,7 +54,7 @@ func (it *UintSetIterator) Next() bool {
 				}
 			}
 		}
-		if it.s.dir[it.curBucketIndex].entries[it.curElementIndex] != 0 {
+		if it.s.dir[it.curBucketIndex].values[it.curElementIndex] != 0 {
 			return true
 		}
 	}
@@ -54,57 +66,54 @@ func (it *UintSetIterator) Cur() uint {
 	if it.curElementIndex == -1 {
 		return 0
 	}
-	return it.s.dir[it.curBucketIndex].entries[it.curElementIndex]
+	return it.s.dir[it.curBucketIndex].values[it.curElementIndex]
 }
 
 //
-// UintHashSet
+// UintSet
 //
-type UintHashSet struct {
+type UintSet struct {
 	dirBits uint
 	hasZero bool
-	dir     []*uintSetBucket
+	dir     []*usBucket
 	count   uint
 }
 
-func NewUintHashSet(initDirBits uint) *UintHashSet {
-	s := &UintHashSet{}
-	if initDirBits < 4 {
-		initDirBits = 4
-	}
-	s.init(initDirBits)
+func NewUintSet() *UintSet {
+	s := &UintSet{}
+	s.init(4)
 
 	return s
 }
 
-func (s *UintHashSet) init(bits uint) {
-	initSize := 1 << bits
-	s.dirBits = bits
-	s.dir = make([]*uintSetBucket, initSize)
+func (s *UintSet) init(dirBits uint) {
+	initSize := 1 << dirBits
+	s.dirBits = dirBits
+	s.dir = make([]*usBucket, initSize)
 	s.count = 0
 	s.hasZero = false
 
-	firstBucket := &uintSetBucket{}
+	firstBucket := s.newBucket(0)
 
 	for i := 0; i < initSize; i++ {
 		s.dir[i] = firstBucket
 	}
 }
 
-func (s *UintHashSet) Clear() {
+func (s *UintSet) Clear() {
 	s.init(4)
 }
 
-func (s *UintHashSet) Iterator() UintSetIterator {
+func (s *UintSet) Iterator() UintSetIterator {
 	return UintSetIterator{s: s}
 }
-func (s *UintHashSet) Includes(value uint) bool {
+func (s *UintSet) Includes(value uint) bool {
 	if value == 0 {
 		return s.hasZero
 	}
 	return s.find(value, false)
 }
-func (s *UintHashSet) Add(value uint) {
+func (s *UintSet) Add(value uint) {
 	if value == 0 {
 		if !s.hasZero {
 			s.hasZero = true
@@ -114,7 +123,7 @@ func (s *UintHashSet) Add(value uint) {
 		s.find(value, true)
 	}
 }
-func (s *UintHashSet) Delete(value uint) bool {
+func (s *UintSet) Delete(value uint) bool {
 	if value == 0 {
 		if s.hasZero {
 			s.hasZero = false
@@ -122,31 +131,66 @@ func (s *UintHashSet) Delete(value uint) bool {
 			return true
 		}
 		return false
-	} else {
-		panic("implement Delete")
 	}
+	h := uintHashCode(value)
+	dirIndex := h >> (bitsPerHashCode - s.dirBits)
+	elemIndex := h % entriesPerHashBucket
+	home := elemIndex
+	b := s.dir[dirIndex]
+	for {
+		if b.values[elemIndex] == value {
+			break
+		}
+		if b.values[elemIndex] == 0 {
+			return false
+		}
+
+		elemIndex = (elemIndex + 1) % entriesPerHashBucket
+		if elemIndex == home {
+			return false
+		}
+	}
+	b.values[elemIndex] = 0
+	lastIndex := elemIndex
+	elemIndex = (elemIndex + 1) % entriesPerHashBucket
+	for (elemIndex != lastIndex) && (b.values[elemIndex] != 0) {
+		home = uintHashCode(b.values[elemIndex]) % entriesPerHashBucket
+		if (lastIndex < elemIndex && (home <= lastIndex || home > elemIndex)) || (lastIndex > elemIndex && home <= lastIndex && home > elemIndex) {
+			b.values[lastIndex] = b.values[elemIndex]
+			b.values[elemIndex] = 0
+			lastIndex = elemIndex
+		}
+		elemIndex = (elemIndex + 1) % entriesPerHashBucket
+	}
+	s.count--
+	return true
 }
-func (s *UintHashSet) Len() uint {
+func (s *UintSet) Len() uint {
 	return s.count
 }
 
-func (s *UintHashSet) split(value uint) {
+func (s *UintSet) newBucket(bits uint) *usBucket {
+	return &usBucket{bits: bits}
+}
+
+func (s *UintSet) split(value uint) {
 	for {
-		dirIndex := uintHashCode(value) >> (bitsPerHashCode - s.dirBits)
+		h := uintHashCode(value)
+		dirIndex := h >> (bitsPerHashCode - s.dirBits)
 		splitBucket := s.dir[dirIndex]
 		if splitBucket.count < entriesPerHashBucket {
 			return // successfully splitted
 		}
 		newBits := splitBucket.bits + 1
 
-		var workBuckets [2]*uintSetBucket
-		workBuckets[0] = &uintSetBucket{bits: newBits}
-		workBuckets[1] = &uintSetBucket{bits: newBits}
+		var workBuckets [2]*usBucket
+		workBuckets[0] = s.newBucket(newBits)
+		workBuckets[1] = s.newBucket(newBits)
 
 		if s.dirBits == splitBucket.bits {
 			// grow directory
 			newDirSize := len(s.dir) * 2
-			newDir := make([]*uintSetBucket, newDirSize)
+			newDir := make([]*usBucket, newDirSize)
 			for index, b := range s.dir {
 				newDir[2*index] = b
 				newDir[2*index+1] = b
@@ -158,20 +202,26 @@ func (s *UintHashSet) split(value uint) {
 
 		/* Copy all elements from split bucket into the new buckets. */
 		for index := 0; index < entriesPerHashBucket; index++ {
-			hash := uintHashCode(splitBucket.entries[index])
+			hash := uintHashCode(splitBucket.values[index])
 			sel := (hash >> (bitsPerHashCode - newBits)) & 1
 			bp := workBuckets[sel]
 			elemLoc := hash % entriesPerHashBucket
-			for ; bp.entries[elemLoc] != 0; elemLoc = (elemLoc + 1) % entriesPerHashBucket {
+			for ; bp.values[elemLoc] != 0; elemLoc = (elemLoc + 1) % entriesPerHashBucket {
 			}
-			bp.entries[elemLoc] = splitBucket.entries[index]
+			bp.values[elemLoc] = splitBucket.values[index]
 			bp.count++
 		}
 
 		// replace splitBucket with first work bucket
-		splitBucket.bits = workBuckets[0].bits
-		splitBucket.count = workBuckets[0].count
-		splitBucket.entries = workBuckets[0].entries
+		var di uint
+		for di = h >> (bitsPerHashCode - s.dirBits); di > 0 && s.dir[di-1] == splitBucket; di-- {
+		}
+		for i, l := di, uint(len(s.dir)); i < l; i++ {
+			if s.dir[i] != splitBucket {
+				break
+			}
+			s.dir[i] = workBuckets[0]
+		}
 
 		// update dict with second bucket
 		dirStart := (dirIndex >> (s.dirBits - newBits)) | 1
@@ -185,17 +235,17 @@ func (s *UintHashSet) split(value uint) {
 }
 
 // add entry for key (or reuse existing)
-func (s *UintHashSet) find(value uint, addIfNotExists bool) bool {
+func (s *UintSet) find(value uint, addIfNotExists bool) bool {
 	valueHash := uintHashCode(value)
 	dirIndex := valueHash >> (bitsPerHashCode - s.dirBits)
 	elementIndex := valueHash % entriesPerHashBucket
 	b := s.dir[dirIndex]
 	homeIndex := elementIndex
 	for {
-		if b.entries[elementIndex] == value {
+		if b.values[elementIndex] == value {
 			return true
 		}
-		if b.entries[elementIndex] == 0 {
+		if b.values[elementIndex] == 0 {
 			break
 		}
 		elementIndex = (elementIndex + 1) % entriesPerHashBucket
@@ -212,11 +262,11 @@ func (s *UintHashSet) find(value uint, addIfNotExists bool) bool {
 		dirIndex = valueHash >> (bitsPerHashCode - s.dirBits)
 		b = s.dir[dirIndex]
 		elementIndex = valueHash % entriesPerHashBucket
-		for ; b.entries[elementIndex] != 0; elementIndex = (elementIndex + 1) % entriesPerHashBucket {
+		for ; b.values[elementIndex] != 0; elementIndex = (elementIndex + 1) % entriesPerHashBucket {
 		}
 	}
 	b.count++
-	b.entries[elementIndex] = value
+	b.values[elementIndex] = value
 	s.count++
 	return true
 }
