@@ -60,6 +60,8 @@ func TestToUint(t *testing.T) {
 	cke(-1, NotPositiveError)
 	cke(float32(3.000001), InexactResultError)
 	cke(float64(3.00000001), InexactResultError)
+	// test Opt/Arg
+	t.Fail()
 }
 
 func TestToInt(t *testing.T) {
@@ -111,6 +113,8 @@ func TestToInt(t *testing.T) {
 	cke(uint(1)<<63, OverflowError)
 	cke(float32(-1.00001), InexactResultError)
 	cke(float64(-1.00001), InexactResultError)
+	//TODO test Opt/Arg
+	t.Fail()
 }
 
 func TestToFloat(t *testing.T) {
@@ -161,4 +165,12 @@ func TestToFloat(t *testing.T) {
 	cke("a", TypeError)
 	cke(md.MaxExactFloatInt+3, OverflowError)
 	cke(md.MinExactFloatInt-3, OverflowError)
+
+	//TODO test Opt/Arg
+	t.Fail()
+}
+
+func TestToStr(t *testing.T) {
+	//TODO
+	t.Fail()
 }
