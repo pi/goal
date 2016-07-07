@@ -2,70 +2,100 @@ package bits
 
 import "github.com/ardente/goal/md"
 
-type BitBuffer struct {
-	Bits []byte
-	pos  uint
+var _ = md.BitsPerUint
+
+type BitStream struct {
+	s   *BitSlice
+	pos uint
 }
 
-func NewBitBuffer(nbits uint) *BitBuffer {
-	s := &BitBuffer{}
-	if nbits > 0 {
-		s.Bits = make([]byte, (nbits+7)/8)
-	}
+func NewBitStream() *BitStream {
+	return &BitStream{}
+}
+
+func NewBitStreamOn(bits []byte) *BitStream {
+	s := &BitStream{}
+	s.s = NewBitSlice()
+	s.s.AppendBytes(bits)
 	return s
 }
 
-func NewBitBufferOn(bits []byte) *BitBuffer {
-	return &BitBuffer{
-		Bits: bits,
+func (s *BitStream) Bytes() []byte {
+	if s.s == nil {
+		return nil
+	} else {
+		return s.s.Bytes()
 	}
 }
 
-func Write(n, bits uint) {
-	if n > md.BitsPerUint {
-		panic("invalid number of bits")
-	}
-
+func (s *BitStream) Pos() uint {
+	return s.pos
 }
 
-func (b *BitBuffer) growCheck(cap uint) {
-	if cap/8 >= uint(len(b.Bits)) {
-		cap = (cap + 7) >> 4
-		newBits := make([]byte, cap)
-		copy(b.Bits, newBits)
-		b.Bits = newBits
+func (s *BitStream) Rewind() {
+	s.pos = 0
+}
+
+func (s *BitStream) Trunc() {
+	if s.s != nil {
+		s.s.SetLen(s.pos)
 	}
 }
 
-func (b *BitBuffer) SetPos(newPos uint) {
-	b.growCheck(newPos)
-	b.pos = newPos
+func (s *BitStream) SetLen(newLen uint) {
+	sp := s.pos
+	s.SetPos(newLen)
+	if s.pos < s.s.len {
+		s.Trunc()
+	}
+	if sp < s.pos {
+		s.pos = sp
+	}
 }
 
-func (s *BitBuffer) Read(n uint) uint {
-	if n > md.BitsPerUint {
-		panic("too many bits")
+func (s *BitStream) SetPos(newPos uint) {
+	if s.s == nil {
+		s.s = NewBitSlice()
 	}
-	if ((s.pos + n) >> 4) > uint(len(s.Bits)) {
-		panic("read beyond end of stream")
+	if newPos > s.s.len {
+		s.s.SetLen(newPos)
 	}
-	byteIndex := s.pos >> 4
-	bitIndex := s.pos & 7
+	s.pos = newPos
+}
+
+func (s *BitStream) Skip(n uint) {
+	s.SetPos(s.pos + n)
+}
+
+func (s *BitStream) Len() uint {
+	if s.s == nil {
+		return 0
+	} else {
+		return s.s.len
+	}
+}
+
+func (s *BitStream) Read(n uint) (uint, uint) {
+	if s.pos+n > s.s.len {
+		n = s.s.len - s.pos
+	}
+	v := s.s.GetBitRange(s.pos, s.pos+n-1)
 	s.pos += n
-	var nr, val uint
-	if bitIndex != 0 {
-		nr = 8 - bitIndex
-		val = uint(s.Bits[byteIndex]) >> bitIndex
-		byteIndex++
+	return v, n
+}
+
+func (s *BitStream) Write(n, bits uint) {
+	if s.s == nil {
+		s.s = NewBitSlice()
 	}
-	for nr < n {
-		val = val | (uint(s.Bits[byteIndex]) << nr)
-		if n-nr < 8 {
-			val &= (uint(1) << n) - 1
-			return val
+	if s.pos == s.s.len {
+		s.s.AppendBits(n, bits)
+		s.pos += n
+	} else {
+		if s.pos+n > s.s.len {
+			s.s.AppendBits(s.pos+n-s.s.len, 0)
 		}
-		nr += 8
-		byteIndex++
+		s.s.PutBitRange(s.pos, s.pos+n-1, bits)
+		s.pos += n
 	}
-	return val
 }

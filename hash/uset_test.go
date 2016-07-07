@@ -40,3 +40,20 @@ func Test_UintSet(t *testing.T) {
 	}
 	th.ReportMemdelta(sm)
 }
+
+func Test_UintSetLarge(t *testing.T) {
+	g := th.NewSeqGen(th.SgRand)
+	s := NewUintSet()
+	for {
+		c := s.Len()
+		if (c%1000000 == 0) && (c != 0) {
+			println(c / 1000000)
+		}
+		v := g.Next()
+		s.Add(v)
+		if c == s.Len() {
+			println("unique randoms:", c)
+			return
+		}
+	}
+}

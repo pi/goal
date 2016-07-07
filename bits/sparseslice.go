@@ -139,7 +139,7 @@ func (s *SparseBitSlice) twoUintsFor(bitIndex uint) (uint, uint) {
 	return lo, 0
 }
 
-func (s *SparseBitSlice) GetBits(from, to uint) uint {
+func (s *SparseBitSlice) GetBitRange(from, to uint) uint {
 	if from > to || to >= s.len {
 		panic("invalid index")
 	}
@@ -167,7 +167,7 @@ func (s *SparseBitSlice) GetBits(from, to uint) uint {
 	}
 }
 
-func (s *SparseBitSlice) PutBits(from, to, bits uint) {
+func (s *SparseBitSlice) PutBitRange(from, to, bits uint) {
 	//TODO optimize
 	for i := from; i <= to; i++ {
 		s.PutBit(i, (bits&1) == 1)
@@ -180,12 +180,12 @@ func (s *SparseBitSlice) ReadBits(from, n uint) uint {
 	if n > md.BitsPerUint {
 		panic("too many bits to read")
 	}
-	return s.GetBits(from, from+n-1)
+	return s.GetBitRange(from, from+n-1)
 }
 
 // Put bits with len
 func (s *SparseBitSlice) WriteBits(from, n, bits uint) {
-	s.PutBits(from, from+n-1, bits)
+	s.PutBitRange(from, from+n-1, bits)
 }
 
 func (s *SparseBitSlice) Clear() {
@@ -196,5 +196,5 @@ func (s *SparseBitSlice) Clear() {
 func (s *SparseBitSlice) AppendBits(n, bits uint) {
 	from := s.len
 	s.len += n
-	s.PutBits(from, s.len-1, bits)
+	s.PutBitRange(from, s.len-1, bits)
 }
