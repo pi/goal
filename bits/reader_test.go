@@ -6,8 +6,12 @@ import (
 	"io"
 	"testing"
 
+	th "github.com/ardente/goal/internal/testhelpers"
 	"github.com/stretchr/testify/assert"
 )
+
+var _ = fmt.Printf
+var _ = th.N
 
 func ck(t *testing.T, vexp, vact uint, nexp, nact uint, err error) {
 	assert.EqualValues(t, vexp, vact)
@@ -24,6 +28,20 @@ func ckeof(t *testing.T, r *BitReader) {
 	assert.EqualValues(t, 0, n)
 	assert.Error(t, err)
 	assert.True(t, err == io.EOF)
+}
+func binStr(data []byte) string {
+	out := make([]byte, len(data)*8)
+	for byteIndex, v := range data {
+		b := out[byteIndex*8:]
+		for i := 7; i >= 0; i-- {
+			if (v & (1 << uint(i))) == 0 {
+				b[7-i] = '0'
+			} else {
+				b[7-i] = '1'
+			}
+		}
+	}
+	return string(out)
 }
 
 func TestBitReader(t *testing.T) {
@@ -44,9 +62,18 @@ func TestBitReader(t *testing.T) {
 	ck(t, 0x0807060504030201, v, 63, n, err)
 
 	v, n, err = r.Read(5)
-	assert.EqualValues(t, v, 0)
+	assert.EqualValues(t, 0, v)
 	assert.EqualValues(t, 1, n)
-	assert.Error(t, err)
+	assert.Nil(t, err)
 
 	ckeof(t, r)
+
+	// TODO
+	/*
+		// stress-test reader
+		g := th.NewSeqGen(th.SgRand)
+		expStr := make([]byte, 0, 10000)
+		actStr := make([]byte, 0, 10000)
+		data := make([]byte, 0, 10000)
+	*/
 }

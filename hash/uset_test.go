@@ -57,3 +57,7 @@ func Test_UintSetLarge(t *testing.T) {
 		}
 	}
 }
+
+func TestUsetIntersection(t *testing.T) {
+
+}

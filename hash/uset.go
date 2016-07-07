@@ -13,11 +13,6 @@ type usBucket struct {
 	values [entriesPerHashBucket]uint
 }
 
-type usmBucket struct {
-	usBucket
-	values [entriesPerHashBucket]string
-}
-
 type UintSetIterator struct {
 	s                               *UintSet
 	started                         bool
@@ -79,6 +74,8 @@ type UintSet struct {
 	count   uint
 }
 
+// Public functions
+
 func NewUintSet() *UintSet {
 	s := &UintSet{}
 	s.init(4)
@@ -86,33 +83,53 @@ func NewUintSet() *UintSet {
 	return s
 }
 
-func (s *UintSet) init(dirBits uint) {
-	initSize := 1 << dirBits
-	s.dirBits = dirBits
-	s.dir = make([]*usBucket, initSize)
-	s.count = 0
-	s.hasZero = false
-
-	firstBucket := s.newBucket(0)
-
-	for i := 0; i < initSize; i++ {
-		s.dir[i] = firstBucket
+func NewUintSetWith(values []uint) *UintSet {
+	s := NewUintSet()
+	for _, v := range values {
+		s.Add(v)
 	}
+	return s
 }
 
 func (s *UintSet) Clear() {
 	s.init(4)
 }
 
+func (s *UintSet) Clone() *UintSet {
+	r := &UintSet{}
+	r.count = s.count
+	r.dir = make([]*usBucket, len(s.dir))
+	r.dirBits = s.dirBits
+	for i, b := range s.dir {
+		if i == 0 || s.dir[i] != s.dir[i-1] {
+			bc := *b
+			r.dir[i] = &bc
+		} else {
+			r.dir[i] = r.dir[i-1]
+		}
+	}
+	return r
+}
+
+func (s *UintSet) Copy() *UintSet {
+	r := NewUintSet()
+	for it := r.Iterator(); it.Next(); {
+		r.Add(it.Cur())
+	}
+	return r
+}
+
 func (s *UintSet) Iterator() UintSetIterator {
 	return UintSetIterator{s: s}
 }
+
 func (s *UintSet) Includes(value uint) bool {
 	if value == 0 {
 		return s.hasZero
 	}
 	return s.find(value, false)
 }
+
 func (s *UintSet) Add(value uint) {
 	if value == 0 {
 		if !s.hasZero {
@@ -123,6 +140,7 @@ func (s *UintSet) Add(value uint) {
 		s.find(value, true)
 	}
 }
+
 func (s *UintSet) Delete(value uint) bool {
 	if value == 0 {
 		if s.hasZero {
@@ -165,8 +183,56 @@ func (s *UintSet) Delete(value uint) bool {
 	s.count--
 	return true
 }
+
 func (s *UintSet) Len() uint {
 	return s.count
+}
+
+func (s *UintSet) Intersect(o *UintSet) *UintSet {
+	r := NewUintSet()
+
+	for it := s.Iterator(); it.Next(); {
+		if o.Includes(it.Cur()) {
+			r.Add(it.Cur())
+		}
+	}
+	return r
+}
+
+func (s *UintSet) Intersects(o *UintSet) bool {
+	for it := s.Iterator(); it.Next(); {
+		if o.Includes(it.Cur()) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *UintSet) Union(o *UintSet) *UintSet {
+	r := NewUintSet()
+	for it := s.Iterator(); it.Next(); {
+		r.Add(it.Cur())
+	}
+	for it := o.Iterator(); it.Next(); {
+		r.Add(it.Cur())
+	}
+	return r
+}
+
+// Private functions
+
+func (s *UintSet) init(dirBits uint) {
+	initSize := 1 << dirBits
+	s.dirBits = dirBits
+	s.dir = make([]*usBucket, initSize)
+	s.count = 0
+	s.hasZero = false
+
+	firstBucket := s.newBucket(0)
+
+	for i := 0; i < initSize; i++ {
+		s.dir[i] = firstBucket
+	}
 }
 
 func (s *UintSet) newBucket(bits uint) *usBucket {
@@ -236,6 +302,9 @@ func (s *UintSet) split(value uint) {
 
 // add entry for key (or reuse existing)
 func (s *UintSet) find(value uint, addIfNotExists bool) bool {
+	if s.dir == nil {
+		s.init(4)
+	}
 	valueHash := uintHashCode(value)
 	dirIndex := valueHash >> (bitsPerHashCode - s.dirBits)
 	elementIndex := valueHash % entriesPerHashBucket

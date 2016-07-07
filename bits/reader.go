@@ -22,20 +22,21 @@ func NewReader(r io.Reader) *BitReader {
 // return bits, number of bits readed, error
 func (r *BitReader) Read(n uint) (uint, uint, error) {
 	var val, readed uint
+	var buf [md.BytesPerUint]byte
+	s := buf[:]
 
 	for readed < n {
 		if r.remBits == 0 {
-			buf := make([]byte, md.BytesPerUint)
-			nr, err := r.r.Read(buf)
+			nr, err := r.r.Read(s)
 			if err != nil {
-				return val & ((1 << readed) - 1), readed, err
+				if err == io.EOF && readed != 0 {
+					return val & ((1 << readed) - 1), readed, nil
+				} else {
+					return 0, 0, err
+				}
 			}
-			r.remBits = 0
-			r.bitBuf = 0
-			for i := 0; i < nr; i++ {
-				r.bitBuf |= uint(buf[i]) << r.remBits
-				r.remBits += 8
-			}
+			r.remBits = uint(nr * 8)
+			r.bitBuf = md.BytesToUint(s)
 		}
 		toRead := n - readed
 		if toRead > r.remBits {
