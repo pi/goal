@@ -1,16 +1,51 @@
 package utils
 
-var debruijn64 = [64]int{
-	0, 1, 2, 53, 3, 7, 54, 27, 4, 38, 41, 8, 34, 55, 48, 28,
-	62, 5, 39, 46, 44, 42, 22, 9, 24, 35, 59, 56, 49, 18, 29, 11,
-	63, 52, 6, 26, 37, 40, 33, 47, 61, 45, 43, 21, 23, 58, 17, 10,
-	51, 25, 36, 32, 60, 20, 57, 16, 50, 31, 19, 15, 30, 14, 13, 12,
+var smallBitLenTable = [16]int{
+	0,
+	1,
+	2,
+	2,
+	3,
+	3,
+	3,
+	3,
+	4,
+	4,
+	4,
+	4,
+	4,
+	4,
+	4,
+	4,
 }
 
-func HighBit(x uint) int {
-	if x == 0 {
-		return -1
-	} else {
-		return debruijn64[(uint64(x)&uint64(-int64(x)))*0x022fdd63cc95386d>>58]
+func BitLen(x uint) (n int) {
+	if x >= 0x80000000 {
+		x >>= 32
+		n += 32
 	}
+	if x >= 0x8000 {
+		x >>= 16
+		n += 16
+	}
+	if x >= 0x80 {
+		x >>= 8
+		n += 8
+	}
+	if x >= 0x8 {
+		x >>= 4
+		n += 4
+	}
+
+	return n + smallBitLenTable[x]
+	/*
+		if x >= 0x2 {
+			x >>= 2
+			n += 2
+		}
+		if x >= 0x1 {
+			n++
+		}
+		return n
+	*/
 }

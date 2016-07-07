@@ -2,6 +2,8 @@ package utils
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/ardente/goal/md"
 )
@@ -79,6 +81,22 @@ func CheckUint(arg interface{}, term string) uint {
 	}
 }
 
+func OptUint(arg interface{}, def uint) uint {
+	if v, err := ToUint(arg); err != nil {
+		return def
+	} else {
+		return v
+	}
+}
+
+func OptUintArg(args []interface{}, index int, def uint) uint {
+	if index < len(args) {
+		return OptUint(args[index], def)
+	} else {
+		return def
+	}
+}
+
 func ToInt(arg interface{}) (int, error) {
 	switch v := arg.(type) {
 	case uint:
@@ -131,6 +149,21 @@ func CheckInt(arg interface{}, term string) int {
 	}
 }
 
+func OptInt(arg interface{}, def int) int {
+	if v, err := ToInt(arg); err != nil {
+		return def
+	} else {
+		return v
+	}
+}
+
+func OptIntArg(args []interface{}, index int, def int) int {
+	if index < len(args) {
+		return OptInt(args[index], def)
+	}
+	return def
+}
+
 func ToFloat(arg interface{}) (float64, error) {
 	switch v := arg.(type) {
 	case float64:
@@ -180,4 +213,64 @@ func CheckFloat(arg interface{}, term string) float64 {
 	} else {
 		return v
 	}
+}
+
+func OptFloat(arg interface{}, def float64) float64 {
+	if v, err := ToFloat(arg); err != nil {
+		return def
+	} else {
+		return v
+	}
+}
+
+func OptFloatArg(args []interface{}, index int, def float64) float64 {
+	if index < len(args) {
+		return OptFloat(args[index], def)
+	}
+	return def
+}
+
+func ToStr(arg interface{}) (s string) {
+	switch v := arg.(type) {
+	case bool:
+		s = strconv.FormatBool(v)
+	case float32:
+		s = strconv.FormatFloat(float64(v), 'f', -1, 32)
+	case float64:
+		s = strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		s = strconv.FormatInt(int64(v), 10)
+	case int8:
+		s = strconv.FormatInt(int64(v), 10)
+	case int16:
+		s = strconv.FormatInt(int64(v), 10)
+	case int32:
+		s = strconv.FormatInt(int64(v), 10)
+	case int64:
+		s = strconv.FormatInt(v, 10)
+	case uint:
+		s = strconv.FormatUint(uint64(v), 10)
+	case uint8:
+		s = strconv.FormatUint(uint64(v), 10)
+	case uint16:
+		s = strconv.FormatUint(uint64(v), 10)
+	case uint32:
+		s = strconv.FormatUint(uint64(v), 10)
+	case uint64:
+		s = strconv.FormatUint(v, 10)
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		s = fmt.Sprintf("%v", v)
+	}
+	return s
+}
+
+func OptStrArg(args []interface{}, index int, def string) string {
+	if index < len(args) {
+		return ToStr(args[index])
+	}
+	return def
 }

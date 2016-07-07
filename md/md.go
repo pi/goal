@@ -1,6 +1,7 @@
 package md
 
 import (
+	"encoding/binary"
 	"unsafe"
 )
 
@@ -14,7 +15,13 @@ const MaxInt = int(1 << (UintSizeShift - 1))
 const MinExactFloatInt = -18014398509481984 // int(^(uint(1) << 54)) + 1
 const MaxExactFloatInt = 18014398509481984  // int(1 << uint(54))
 
-// UintToBytes convert uint to binary representation bytes to uint value using machine byte order
+var (
+	IsBigEndian    bool
+	IsLittleEndian bool
+	NativeEndian   binary.ByteOrder
+)
+
+// UintToBytes puts 64-bit unsigned integer to to bytes in processor byte order
 func UintToBytes(v uint, b []byte) {
 	if len(b) < BytesPerUint {
 		panic("too small buffer")
@@ -22,12 +29,30 @@ func UintToBytes(v uint, b []byte) {
 	*(*uint)(unsafe.Pointer(&b[0])) = v
 }
 
-// BytesToUint convert binary representation bytes to uint value using machine byte order
-func BytesToUint(b []byte) uint {
+// UintFromBytes extracts 64-bit unsigned integer from bytes in processor byte order
+func UintFromBytes(b []byte) uint {
 	if len(b) < BytesPerUint {
 		panic("too small buffer")
 	}
 	return *(*uint)(unsafe.Pointer(&b[0]))
+}
+
+// UintToLittleEndianBytes puts 64-bit unsigned integer to bytes in little-endian order
+func UintToLittleEndianBytes(v uint, b []byte) {
+	if IsLittleEndian {
+		UintToBytes(v, b)
+	} else {
+		binary.LittleEndian.PutUint64(b, uint64(v))
+	}
+}
+
+// UintFromLittleEndianBytes extracts 64-bit unsigned integer from bytes in little-endian order
+func UintFromLittleEndianBytes(b []byte) uint {
+	if IsLittleEndian {
+		return UintFromBytes(b)
+	} else {
+		return uint(binary.LittleEndian.Uint64(b))
+	}
 }
 
 func init() {
@@ -37,7 +62,11 @@ func init() {
 
 	var buf [8]byte
 	*(*uint)(unsafe.Pointer(&buf[0])) = 1
-	if buf[0] != 1 {
-		panic("little-endian system required")
+	IsBigEndian = buf[0] != 1
+	IsLittleEndian = !IsBigEndian
+	if IsBigEndian {
+		NativeEndian = binary.BigEndian
+	} else {
+		NativeEndian = binary.LittleEndian
 	}
 }

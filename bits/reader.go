@@ -36,7 +36,7 @@ func (r *BitReader) Read(n uint) (uint, uint, error) {
 				}
 			}
 			r.remBits = uint(nr * 8)
-			r.bitBuf = md.BytesToUint(s)
+			r.bitBuf = md.UintFromLittleEndianBytes(s)
 		}
 		toRead := n - readed
 		if toRead > r.remBits {
