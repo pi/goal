@@ -4,6 +4,6 @@ cd ..\bits
 go install
 cd ..\hash
 go install
-cd ..\utils
+cd ..\gut
 go install
 cd ..

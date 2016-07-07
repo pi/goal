@@ -1,6 +1,6 @@
 package bits
 
-import "github.com/ardente/goal/utils"
+import "github.com/ardente/goal/gut"
 
 func getLenAndCap(args ...interface{}) (uint, uint) {
 	l := uint(0)
@@ -10,9 +10,9 @@ func getLenAndCap(args ...interface{}) (uint, uint) {
 	case 0:
 		return 0, 0
 	case 1:
-		l = utils.CheckUint(args[0], "len")
+		l = gut.CheckUint(args[0], "len")
 	case 2:
-		l, c = utils.CheckUint(args[0], "len"), utils.CheckUint(args[1], "cap")
+		l, c = gut.CheckUint(args[0], "len"), gut.CheckUint(args[1], "cap")
 	default:
 		panic("too many arguments")
 	}

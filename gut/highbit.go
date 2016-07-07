@@ -1,4 +1,4 @@
-package utils
+package gut
 
 var smallBitLenTable = [16]int{
 	0,
