@@ -1,4 +1,4 @@
-package testhelpers
+package th
 
 import "math/rand"
 

@@ -3,7 +3,7 @@ package gut
 import (
 	"testing"
 
-	th "github.com/ardente/goal/internal/testhelpers"
+	"github.com/ardente/goal/th"
 	"github.com/stretchr/testify/assert"
 )
 

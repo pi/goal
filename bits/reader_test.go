@@ -6,12 +6,10 @@ import (
 	"io"
 	"testing"
 
-	th "github.com/ardente/goal/internal/testhelpers"
 	"github.com/stretchr/testify/assert"
 )
 
 var _ = fmt.Printf
-var _ = th.N
 
 func ck(t *testing.T, vexp, vact uint, nexp, nact uint, err error) {
 	assert.EqualValues(t, vexp, vact)

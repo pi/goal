@@ -6,4 +6,6 @@ cd ..\hash
 go install
 cd ..\gut
 go install
+cd ..\th
+go install
 cd ..

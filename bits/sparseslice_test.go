@@ -3,7 +3,7 @@ package bits
 import (
 	"testing"
 
-	th "github.com/ardente/goal/internal/testhelpers"
+	_ "github.com/ardente/goal/th"
 	"github.com/stretchr/testify/assert"
 )
 
