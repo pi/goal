@@ -91,3 +91,26 @@ func Test_UintMapDelete(t *testing.T) {
 	assert.False(t, m.IncludesKey(0))
 	th.ReportMemdelta(sm)
 }
+
+func Test_UintMapDo(t *testing.T) {
+	const N = 1000
+	var n int
+	kg := newKeygen()
+	m := NewUintMap()
+	keys := make(map[uint]bool)
+	for i := 0; i < N; i++ {
+		k := kg.Next()
+		keys[k] = true
+		m.Put(k, ^k)
+	}
+
+	m.Do(func(k, v uint) {
+		n++
+		if k != ^v {
+			t.Fail()
+		}
+		delete(keys, k)
+	})
+	assert.Equal(t, len(keys), 0)
+	assert.Equal(t, n, N)
+}

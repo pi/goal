@@ -214,6 +214,25 @@ func (m *UintMap) Delete(key uint) bool {
 func (m *UintMap) Len() uint {
 	return m.count
 }
+func (m *UintMap) Do(f func(uint, uint)) {
+	if m.zeroEntryAssigned {
+		f(0, m.zeroEntry.value)
+	}
+	di := 0
+	for {
+		b := m.dir[di]
+		for i := 0; i < entriesPerHashBucket; i++ {
+			if b.entries[i].key != 0 {
+				f(b.entries[i].key, b.entries[i].value)
+			}
+		}
+		for di++; di < len(m.dir) && m.dir[di] == m.dir[di-1]; di++ {
+		}
+		if di == len(m.dir) {
+			return
+		}
+	}
+}
 
 func (m *UintMap) split(key uint) {
 	h := uintHashCode(key)

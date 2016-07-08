@@ -268,13 +268,14 @@ func (s *UintSet) split(value uint) {
 
 		/* Copy all elements from split bucket into the new buckets. */
 		for index := 0; index < entriesPerHashBucket; index++ {
-			hash := uintHashCode(splitBucket.values[index])
+			v := splitBucket.values[index]
+			hash := uintHashCode(v)
 			sel := (hash >> (bitsPerHashCode - newBits)) & 1
 			bp := workBuckets[sel]
 			elemLoc := hash % entriesPerHashBucket
 			for ; bp.values[elemLoc] != 0; elemLoc = (elemLoc + 1) % entriesPerHashBucket {
 			}
-			bp.values[elemLoc] = splitBucket.values[index]
+			bp.values[elemLoc] = v
 			bp.count++
 		}
 
@@ -338,4 +339,15 @@ func (s *UintSet) find(value uint, addIfNotExists bool) bool {
 	b.values[elementIndex] = value
 	s.count++
 	return true
+}
+
+// answer approx amount of used memory
+func (s *UintSet) memuse() uint {
+	nuq := 1
+	for i := 1; i < len(s.dir); i++ {
+		if s.dir[i-1] != s.dir[i] {
+			nuq++
+		}
+	}
+	return uint(nuq*entriesPerHashBucket*8 + len(s.dir)*8)
 }

@@ -10,14 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newKeygen() th.SeqGen {
-	return th.NewSeqGen(th.SgRand)
-}
-
 func Test_UintSet(t *testing.T) {
 	sm := th.TotalAlloc()
 	s := NewUintSet()
-	kg := newKeygen()
+	kg := th.NewSeqGen(th.SgRand)
 
 	for i := uint(0); i < th.N; i++ {
 		s.Add(i)
@@ -38,26 +34,54 @@ func Test_UintSet(t *testing.T) {
 	for i := uint64(0); i < th.N; i++ {
 		assert.True(t, s.Includes(uint(kg.Next())))
 	}
+	println("memuse", s.memuse())
 	th.ReportMemdelta(sm)
 }
 
 func Test_UintSetLarge(t *testing.T) {
+	sm := th.TotalAlloc()
+	defer th.ReportMemdelta(sm)
 	g := th.NewSeqGen(th.SgRand)
 	s := NewUintSet()
+	limit := uint(100 * 1000 * 1000)
 	for {
-		c := s.Len()
-		if (c%1000000 == 0) && (c != 0) {
-			println(c / 1000000)
+		l := s.Len()
+		if (l%1000000 == 0) && (l != 0) {
+			print(".")
 		}
 		v := g.Next()
 		s.Add(v)
-		if c == s.Len() {
-			println("unique randoms:", c)
+		if l == s.Len() || l == limit {
+			println("\nunique randoms:", l, "memuse:", s.memuse(), "dir:", len(s.dir))
+			return
+		}
+	}
+}
+
+func Test_MapLarge(t *testing.T) {
+	sm := th.TotalAlloc()
+	defer th.ReportMemdelta(sm)
+	g := th.NewSeqGen(th.SgRand)
+	s := make(map[uint]bool)
+	limit := 100 * 1000 * 1000
+	for {
+		l := len(s)
+		if (l%1000000 == 0) && (l != 0) {
+			print(".")
+		}
+		v := g.Next()
+		s[v] = true
+		if l == len(s) || l == limit {
+			println("\nunique randoms:", l)
 			return
 		}
 	}
 }
 
 func TestUsetIntersection(t *testing.T) {
+	t.Fail()
+}
 
+func TestUsetCopy(t *testing.T) {
+	t.Fail()
 }
