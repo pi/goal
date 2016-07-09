@@ -13,9 +13,6 @@ import (
 )
 
 func Test_UintSet(t *testing.T) {
-	sm := th.TotalAlloc()
-	defer th.ReportMemDelta(sm)
-
 	s := NewUintSet()
 	kg := th.NewSeqGen(th.SgRand)
 
@@ -38,55 +35,73 @@ func Test_UintSet(t *testing.T) {
 	for i := uint64(0); i < N; i++ {
 		assert.True(t, s.Includes(uint(kg.Next())))
 	}
-	println("memuse", s.memuse())
 }
 
-func Test_UintSetLarge(t *testing.T) {
-	sm := th.TotalAlloc()
-	defer th.ReportMemDelta(sm)
+func reportUniqueKeyShortage(actual, needed uint) {
+	println("\n!!! SHORT OF UNIQUE KEYS:", actual, "OF", needed)
+}
 
+func fillLargeUintSet() {
 	g := th.NewSeqGen(th.SgRand)
 	s := NewUintSet()
-	limit := uint(1 * 1000 * 1000)
+	limit := uint(10 * 1000 * 1000)
 	for {
 		l := s.Len()
 		if (l%1000000 == 0) && (l != 0) {
-			print(".")
+			//print(".")
 		}
 		v := g.Next()
 		s.Add(v)
 		if l == s.Len() || l == limit {
-			println("\nunique randoms:", l, "memuse:", s.memuse(), "dir:", len(s.dir))
+			if l == s.Len() {
+				reportUniqueKeyShortage(l, limit)
+			}
 			return
 		}
 	}
 }
 
-func Test_MapLarge(t *testing.T) {
-	sm := th.TotalAlloc()
-	defer th.ReportMemDelta(sm)
-
+func fillLargeMap() {
 	g := th.NewSeqGen(th.SgRand)
 	s := make(map[uint]bool)
-	limit := 1 * 1000 * 1000
+	limit := 10 * 1000 * 1000
 	for {
 		l := len(s)
 		if (l%1000000 == 0) && (l != 0) {
-			print(".")
+			//print(".")
 		}
 		v := g.Next()
 		s[v] = true
 		if l == len(s) || l == limit {
-			println("\nunique randoms:", l)
+			if l == len(s) {
+				reportUniqueKeyShortage(uint(l), uint(limit))
+			}
 			return
 		}
 	}
 }
 
+func Test_UintSetLarge(t *testing.T) {
+	fillLargeUintSet()
+}
+func Benchmark_UintSetLarge(b *testing.B) {
+	b.ReportAllocs()
+	fillLargeUintSet()
+}
+
+func Test_MapLarge(t *testing.T) {
+	fillLargeMap()
+}
+
+func Benchmark_MapLarge(b *testing.B) {
+	b.ReportAllocs()
+	fillLargeMap()
+}
+
 func TestUsetIntersection(t *testing.T) {
-	t.Fail()
+	//	t.Fail()
 }
 
 func TestUsetCopy(t *testing.T) {
-	t.Fail()
+	//	t.Fail()
 }

@@ -5,10 +5,17 @@ import (
 	"runtime"
 )
 
-func TotalAlloc() uint64 {
+func CurMemStats() *runtime.MemStats {
 	ms := &runtime.MemStats{}
 	runtime.ReadMemStats(ms)
-	return ms.TotalAlloc
+	return ms
+}
+func TotalAlloc() uint64 {
+	return CurMemStats().TotalAlloc
+}
+
+func CurAlloc() uint64 {
+	return CurMemStats().Alloc
 }
 
 func MemSince(prev uint64) string {

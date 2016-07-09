@@ -13,7 +13,7 @@ type SeqGen interface {
 const (
 	SgRand = iota
 	SgSeq
-	SgTwist
+	SgZigzag
 )
 
 func NewSeqGen(sgt int) SeqGen {
@@ -22,8 +22,8 @@ func NewSeqGen(sgt int) SeqGen {
 		return &randSG{}
 	case SgSeq:
 		return &seqSG{}
-	case SgTwist:
-		return &twistSG{}
+	case SgZigzag:
+		return &zigzagSG{}
 	default:
 		panic("invalid sequence generator type")
 	}
@@ -85,12 +85,12 @@ func (g *seqSG) Period() uint {
 	return g.period
 }
 
-type twistSG struct {
+type zigzagSG struct {
 	cur               uint
 	period, generated uint
 }
 
-func (g *twistSG) Next() uint {
+func (g *zigzagSG) Next() uint {
 	if g.period != 0 && g.generated == g.period {
 		g.Reset()
 	}
@@ -103,17 +103,17 @@ func (g *twistSG) Next() uint {
 	return g.cur
 }
 
-func (g *twistSG) Reset() {
+func (g *zigzagSG) Reset() {
 	g.cur = 0
 	g.generated = 0
 }
-func (g *twistSG) Seed(value uint) {
+func (g *zigzagSG) Seed(value uint) {
 	g.cur = value
 }
-func (g *twistSG) SetPeriod(period uint) {
+func (g *zigzagSG) SetPeriod(period uint) {
 	g.period = period
 	g.generated = 0
 }
-func (g *twistSG) Period() uint {
+func (g *zigzagSG) Period() uint {
 	return g.period
 }

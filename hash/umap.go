@@ -214,6 +214,18 @@ func (m *UintMap) Delete(key uint) bool {
 func (m *UintMap) Len() uint {
 	return m.count
 }
+func (m *UintMap) DirSize() int {
+	return len(m.dir)
+}
+func (m *UintMap) BucketCount() int {
+	c := 1
+	for i := 1; i < len(m.dir); i++ {
+		if m.dir[i] != m.dir[i-1] {
+			c++
+		}
+	}
+	return c
+}
 func (m *UintMap) Do(f func(uint, uint)) {
 	if m.zeroEntryAssigned {
 		f(0, m.zeroEntry.value)

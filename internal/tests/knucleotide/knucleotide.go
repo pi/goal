@@ -15,12 +15,20 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime"
 	"sort"
 	"time"
 
 	"github.com/ardente/goal/hash"
 	"github.com/ardente/goal/th"
 )
+
+var useNative = true
+
+const useStdin = false
+const parallel = false
+
+var writeSeqs = false
 
 type countMap interface {
 	Len() uint
@@ -46,8 +54,6 @@ func (m nativeCountMap) Len() uint {
 	return uint(len(m))
 }
 
-const useNative = true
-
 func newCountMap() countMap {
 	if useNative {
 		return make(nativeCountMap)
@@ -57,6 +63,18 @@ func newCountMap() countMap {
 }
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	useNative = true
+	bench()
+	writeSeqs = false
+
+	/*runtime.GC()
+
+	useNative = false
+	bench()*/
+}
+
+func bench() {
 	st := time.Now()
 	sm := th.TotalAlloc()
 	defer th.ReportMemDelta(sm)
@@ -66,27 +84,35 @@ func main() {
 	for i := 0; i < 7; i++ {
 		cl[i] = make(chan string)
 	}
-	/*report(cl[0], dna, 1)
-	report(cl[1], dna, 2)*/
+	report(cl[0], dna, 1)
+	report(cl[1], dna, 2)
 	report(cl[2], dna, 3)
 	report(cl[3], dna, 4)
 	report(cl[4], dna, 6)
 	report(cl[5], dna, 12)
 	report(cl[6], dna, 18)
-	/*for i := 0; i < 7; i++ {
-		fmt.Print(<-cl[i])
-	}*/
+	if parallel {
+		for i := 0; i < 7; i++ {
+			fmt.Print(<-cl[i])
+		}
+	}
 	fmt.Printf("\ntook %v", time.Since(st))
 }
 
 func readEncDNA() []byte {
 	var f *os.File
-	const fn = "fasta25000000.txt"
-	f, err := os.Open(fn)
-	if err != nil {
-		panic("can't open " + fn)
+
+	if useStdin {
+		f = os.Stdin
+	} else {
+		const fn = "fasta25000000.txt"
+		var err error
+		f, err = os.Open(fn)
+		if err != nil {
+			panic("can't open " + fn)
+		}
+		defer f.Close()
 	}
-	defer f.Close()
 	in, startTok := bufio.NewReader(f), []byte(">THREE ")
 	for line, err := in.ReadSlice('\n'); !bytes.HasPrefix(line, startTok); line, err = in.ReadSlice('\n') {
 		if err != nil {
@@ -123,47 +149,63 @@ func readEncDNA() []byte {
 var targSeqs = []string{3: "GGT", 4: "GGTA", 6: "GGTATT", 12: "GGTATTTTAATT", 18: "GGTATTTTAATTTATAGT"}
 
 func report(rc chan string, dna []byte, n int) {
-	//go func() {
-	sm := th.TotalAlloc()
-	st := time.Now()
-	tbl, output := count(dna, n), ""
-	switch n {
-	case 1, 2:
-		output = freqReport(tbl, n)
-	default:
-		targ := targSeqs[n]
-		output = fmt.Sprintf("%d\t%s %s %v\n", tbl.Get(uint(compStr(targ))), targ, th.MemSince(sm), time.Since(st))
+	rfunc := func() {
+		sm := th.TotalAlloc()
+		st := time.Now()
+		tbl, output := count(dna, n), ""
+		switch n {
+		case 1, 2:
+			output = freqReport(tbl, n)
+		default:
+			targ := targSeqs[n]
+			output = fmt.Sprintf("%d\t%s| %d %s %v\n", tbl.Get(uint(compStr(targ))), targ, tbl.Len(), th.MemSince(sm), time.Since(st))
+		}
+		if parallel {
+			rc <- output
+		} else {
+			print(output)
+		}
 	}
-	println(output) //rc <- output
-	//}()
+	if parallel {
+		go rfunc()
+	} else {
+		rfunc()
+	}
 }
 
 func count(dna []byte, n int) countMap {
-	var st time.Time
-
 	tbl := newCountMap()
-	seq := make([]uint64, len(dna))
-	ns := 0
-	st = time.Now()
-	for i, end := 0, len(dna)-n; i < end; i++ {
-		seq[ns] = compress(dna[i : i+n])
-		ns++
-	}
-	seq = seq[:ns]
-	fmt.Printf("[parse time:%v]", time.Since(st))
 
-	f, err := os.Create(fmt.Sprintf("seqs.%d", n))
-	if err != nil {
-		panic(err.Error())
-	}
-	defer f.Close()
-	st = time.Now()
-	enc := gob.NewEncoder(f)
-	enc.Encode(seq)
-	fmt.Printf("[write time:%v]", time.Since(st))
+	if writeSeqs {
+		var st time.Time
 
-	for _, s := range seq {
-		tbl.Inc(uint(s), 1)
+		seq := make([]uint64, len(dna))
+		ns := 0
+		st = time.Now()
+		for i, end := 0, len(dna)-n; i < end; i++ {
+			seq[ns] = compress(dna[i : i+n])
+			ns++
+		}
+		seq = seq[:ns]
+		fmt.Printf("[parse time:%v]", time.Since(st))
+
+		f, err := os.Create(fmt.Sprintf("seqs.%d", n))
+		if err != nil {
+			panic(err.Error())
+		}
+		defer f.Close()
+		st = time.Now()
+		enc := gob.NewEncoder(f)
+		enc.Encode(seq)
+		fmt.Printf("[write time:%v]", time.Since(st))
+
+		for _, s := range seq {
+			tbl.Inc(uint(s), 1)
+		}
+	} else {
+		for i, end := 0, len(dna)-n; i < end; i++ {
+			tbl.Inc(uint(compress(dna[i:i+n])), 1)
+		}
 	}
 	return tbl
 }
