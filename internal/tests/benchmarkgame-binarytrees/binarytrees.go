@@ -38,7 +38,7 @@ func nodesPerTree(depth int) uint {
 	return (1<<uint(depth))*2 - 1
 }
 
-func bottomUpTree(p *gut.MemPool, item, depth int) (n *Node) {
+func bottomUpTree(p *gut.UnsafeMemoryPool, item, depth int) (n *Node) {
 	n = (*Node)(p.Alloc(bytesPerNode))
 	n.item = item
 
@@ -77,7 +77,7 @@ func main() {
 	}
 	stretchDepth := maxDepth + 1
 
-	ltpool := gut.NewMemPool(nodesPerTree(stretchDepth) * bytesPerNode)
+	ltpool := gut.NewUnsafeMemoryPool(nodesPerTree(stretchDepth) * bytesPerNode)
 
 	check_l := bottomUpTree(ltpool, 0, stretchDepth).itemCheck()
 	fmt.Printf("stretch tree of depth %d\t check: %d\n", stretchDepth, check_l)
@@ -88,14 +88,17 @@ func main() {
 	var wg sync.WaitGroup
 	result := make([]string, maxDepth+1)
 
+	gate := make(chan bool, runtime.NumCPU())
+
 	for depth_l := minDepth; depth_l <= maxDepth; depth_l += 2 {
 		wg.Add(1)
+		gate <- true
 		go func(depth int, check int, r *string) {
 			defer wg.Done()
 			iterations := 1 << uint(maxDepth-depth+minDepth)
 			check = 0
 
-			pool := gut.NewMemPool(nodesPerTree(depth) * bytesPerNode)
+			pool := gut.NewUnsafeMemoryPool(nodesPerTree(depth) * bytesPerNode)
 			for i := 1; i <= iterations; i++ {
 				pool.Reset()
 				check += bottomUpTree(pool, i, depth).itemCheck()
@@ -104,6 +107,7 @@ func main() {
 			}
 			pool.Done()
 			*r = fmt.Sprintf("%d\t trees of depth %d\t check: %d", iterations*2, depth, check)
+			<-gate
 		}(depth_l, check_l, &result[depth_l])
 	}
 	wg.Wait()

@@ -1,38 +1,49 @@
-//
-// +build unix
-//
 package gut
 
 import (
-	"syscall"
+	"sync/atomic"
 	"unsafe"
+	"github.com/ardente/goal/md"
 )
 
-type MemPool struct {
+type UnsafeMemoryPool struct {
 	mem       []byte
-	allocated uint
+	allocated uint64
+	shared    bool
 }
 
-func NewMemPool(size uint) *MemPool {
-	p := &MemPool{}
+func NewUnsafeMemoryPool(size uint) *UnsafeMemoryPool {
+	p := &UnsafeMemoryPool{}
 	var err error
-	p.mem, err = syscall.Mmap(-1, 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	p.mem, err = md.VAlloc(size)
 	if err != nil {
 		panic(err)
 	}
 	return p
 }
-
-func (p *MemPool) Reset() {
+func NewSharedUnsafeMemoryPool(size uint) *UnsafeMemoryPool {
+	p := NewUnsafeMemoryPool(size)
+	p.shared = true
+	return p
+}
+func (p *UnsafeMemoryPool) Reset() {
 	p.allocated = 0
 }
-func (p *MemPool) Done() {
-	syscall.Munmap(p.mem)
+func (p *UnsafeMemoryPool) Done() {
+	err := md.VFree(p.mem)
+	if err != nil {
+		panic(err)
+	}
 	p.mem = nil
 }
-func (p *MemPool) Alloc(n uint) (block unsafe.Pointer) {
+func (p *UnsafeMemoryPool) Alloc(n uint) (block unsafe.Pointer) {
 	n = (n + 7) & ^uint(7)
-	block = unsafe.Pointer(&p.mem[p.allocated])
-	p.allocated += n
+	if p.shared {
+		ptr := atomic.AddUint64(&p.allocated, uint64(n))
+		block = unsafe.Pointer(&p.mem[ptr-uint64(n)])
+	} else {
+		block = unsafe.Pointer(&p.mem[p.allocated])
+		p.allocated += uint64(n)
+	}
 	return
 }
