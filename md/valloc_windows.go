@@ -38,7 +38,7 @@ func VAlloc(size uint) ([]byte, error) {
 }
 
 func VFree(mem []byte) error {
-	r0, _, e0 := syscall.Syscall6(_VirtualFreeAddr, 4, uintptr(unsafe.Pointer(&mem[0])), 0, _MEM_RELEASE, 0, 0, 0)
+	r0, _, e0 := syscall.Syscall(_VirtualFreeAddr, 3, uintptr(unsafe.Pointer(&mem[0])), 0, _MEM_RELEASE)
 	if r0 == 0 {
 		return syscall.Errno(e0)
 	}
