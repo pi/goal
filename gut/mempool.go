@@ -33,8 +33,9 @@ func (p *UnsafeMemoryPool) Done() {
 }
 func (p *UnsafeMemoryPool) Alloc(n uint) (block unsafe.Pointer) {
 	n = (n + 7) & ^uint(7)
-	if uint64(n) > (uint64(cap(p.mem))-p.allocated) {
-		return unsafe.Pointer(uintptr(0))
+	if uint64(n) > (uint64(cap(p.mem)) - p.allocated) {
+		var null uintptr
+		return unsafe.Pointer(null) // work around internal compiler bug: go can't compile unsafe.Pointer(uintptr(0)) here
 	}
 	block = unsafe.Pointer(&p.mem[p.allocated])
 	p.allocated += uint64(n)
