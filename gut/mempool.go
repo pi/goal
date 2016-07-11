@@ -2,6 +2,7 @@ package gut
 
 import (
 	"reflect"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/ardente/goal/md"
@@ -12,24 +13,46 @@ type UnsafeMemoryPool struct {
 	allocated uint64
 }
 
-func NewUnsafeMemoryPool(size uint) *UnsafeMemoryPool {
+type SharedUnsafeMemoryPool struct {
+	UnsafeMemoryPool
+}
+
+func NewUnsafeMemoryPool(size uint) (*UnsafeMemoryPool, error) {
 	p := &UnsafeMemoryPool{}
+	err := p.init(size)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+func NewSharedUnsafeMemoryPool(size uint) (*SharedUnsafeMemoryPool, error) {
+	p := &SharedUnsafeMemoryPool{}
+	err := p.init(size)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (p *UnsafeMemoryPool) init(size uint) error {
 	var err error
 	p.mem, err = md.VAlloc(size)
 	if err != nil {
-		panic(err)
+		return err
+	} else {
+		return nil
 	}
-	return p
 }
 func (p *UnsafeMemoryPool) Reset() {
 	p.allocated = 0
 }
-func (p *UnsafeMemoryPool) Done() {
-	err := md.VFree(p.mem)
-	if err != nil {
-		panic(err)
+func (p *UnsafeMemoryPool) Done() error {
+	m := p.mem
+	if m == nil {
+		panic("pool already finalized")
 	}
 	p.mem = nil
+	return md.VFree(m)
 }
 func (p *UnsafeMemoryPool) Alloc(n uint) (block unsafe.Pointer) {
 	n = (n + 7) & ^uint(7)
@@ -86,5 +109,19 @@ func (p *UnsafeMemoryPool) AllocFloats64(n uint) []float64 {
 		return nil
 	} else {
 		return *(*[]float64)(unsafe.Pointer(sh))
+	}
+}
+func (p *SharedUnsafeMemoryPool) Alloc(n uint) unsafe.Pointer {
+	alignedSize := uint64(n+7) & ^uint64(7)
+	for {
+		oldAllocated := p.allocated
+		newAllocated := oldAllocated + alignedSize
+		if newAllocated < oldAllocated || newAllocated > uint64(cap(p.mem)) {
+			var null uintptr
+			return unsafe.Pointer(null) // work around internal compiler bug: Go can't compile unsafe.Pointer(uintptr(0)) here yet
+		}
+		if atomic.CompareAndSwapUint64(&p.allocated, oldAllocated, newAllocated) {
+			return unsafe.Pointer(&p.mem[oldAllocated])
+		}
 	}
 }

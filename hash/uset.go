@@ -240,8 +240,8 @@ func (s *UintSet) newBucket(bits uint) *usBucket {
 }
 
 func (s *UintSet) split(value uint) {
+	h := uintHashCode(value)
 	for {
-		h := uintHashCode(value)
 		dirIndex := h >> (bitsPerHashCode - s.dirBits)
 		splitBucket := s.dir[dirIndex]
 		if splitBucket.count < entriesPerHashBucket {

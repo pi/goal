@@ -64,8 +64,6 @@ const minDepth = 4
 func main() {
 	startTime := time.Now()
 
-	runtime.GOMAXPROCS(runtime.NumCPU() + 2)
-
 	flag.Parse()
 	if flag.NArg() > 0 {
 		n, _ = strconv.Atoi(flag.Arg(0))
@@ -77,7 +75,7 @@ func main() {
 	}
 	stretchDepth := maxDepth + 1
 
-	ltpool := gut.NewUnsafeMemoryPool(nodesPerTree(stretchDepth) * bytesPerNode)
+	ltpool, _ := gut.NewUnsafeMemoryPool(nodesPerTree(stretchDepth) * bytesPerNode)
 
 	check_l := bottomUpTree(ltpool, 0, stretchDepth).itemCheck()
 	fmt.Printf("stretch tree of depth %d\t check: %d\n", stretchDepth, check_l)
@@ -91,14 +89,14 @@ func main() {
 	gate := make(chan bool, runtime.NumCPU())
 
 	for depth_l := minDepth; depth_l <= maxDepth; depth_l += 2 {
-		wg.Add(1)
 		gate <- true
+		wg.Add(1)
 		go func(depth int, check int, r *string) {
 			defer wg.Done()
 			iterations := 1 << uint(maxDepth-depth+minDepth)
 			check = 0
 
-			pool := gut.NewUnsafeMemoryPool(nodesPerTree(depth) * bytesPerNode)
+			pool, _ := gut.NewUnsafeMemoryPool(nodesPerTree(depth) * bytesPerNode)
 			for i := 1; i <= iterations; i++ {
 				pool.Reset()
 				check += bottomUpTree(pool, i, depth).itemCheck()

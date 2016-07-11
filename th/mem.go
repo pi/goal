@@ -13,6 +13,9 @@ func CurMemStats() *runtime.MemStats {
 func TotalAlloc() uint64 {
 	return CurMemStats().TotalAlloc
 }
+func TotalAllocs() uint64 {
+	return CurMemStats().Mallocs
+}
 
 func CurAlloc() uint64 {
 	return CurMemStats().Alloc

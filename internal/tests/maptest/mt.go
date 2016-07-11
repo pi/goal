@@ -27,6 +27,7 @@ type benchRec struct {
 	period uint64
 	time   [2]time.Duration // 0 - native, 1 - my
 	mem    [2]uint64        // 0 - native, 1 - my
+	allocs [2]uint64
 }
 
 func percLess(my, native uint64) float64 {
@@ -136,9 +137,8 @@ func main() {
 }
 
 func testSet() (mem uint64, took time.Duration) {
-	//g := th.NewSeqGen(th.SgRand)
 	const fn = "results.txt"
-	const label = "1"
+	const label = "rk1"
 	var f *os.File
 	var err error
 	if _, e := os.Stat(fn); e == nil {
@@ -154,13 +154,15 @@ func testSet() (mem uint64, took time.Duration) {
 
 	st := time.Now()
 	sm := th.TotalAlloc()
+	sa := th.TotalAllocs()
 	m := hash.NewUintSet()
+	g := th.NewSeqGen(th.SgRand)
 	for i := uint(1); i < 30000000; i++ {
-		m.Add(i)
+		m.Add(g.Next())
 	}
 	mem = th.TotalAlloc() - sm
 	took = time.Since(st)
-	s := fmt.Sprintf("%s %s %s\n", label, th.MemSince(sm), took.String())
+	s := fmt.Sprintf("%s\t%s\t%d\t%s\n", label, th.MemSince(sm), th.TotalAllocs()-sa, took.String())
 	f.WriteString(s)
 	print(s)
 	return mem, took
