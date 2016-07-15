@@ -3,7 +3,7 @@ package bits
 import (
 	"io"
 
-	"github.com/ardente/goal/md"
+	"gopkg.in/pi/goal/md"
 )
 
 type BitReader struct {

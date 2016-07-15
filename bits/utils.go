@@ -1,6 +1,6 @@
 package bits
 
-import "github.com/ardente/goal/gut"
+import "gopkg.in/pi/goal/gut"
 
 func getLenAndCap(args ...interface{}) (uint, uint) {
 	l := uint(0)

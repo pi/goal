@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/ardente/goal/md"
+	"gopkg.in/pi/goal/md"
 )
 
 var (

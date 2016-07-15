@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ardente/goal/gut"
+	"gopkg.in/pi/goal/gut"
 )
 
 var n = 20

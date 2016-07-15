@@ -19,8 +19,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ardente/goal/hash"
-	"github.com/ardente/goal/th"
+	"gopkg.in/pi/goal/hash"
+	"gopkg.in/pi/goal/th"
 )
 
 var useNative = true

@@ -3,7 +3,7 @@ package gut
 import (
 	"testing"
 
-	"github.com/ardente/goal/th"
+	"gopkg.in/pi/goal/th"
 	"github.com/stretchr/testify/assert"
 )
 

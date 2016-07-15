@@ -1,6 +1,6 @@
 package hash
 
-import "github.com/ardente/goal/md"
+import "gopkg.in/pi/goal/md"
 
 const bitsPerHashCode = md.BitsPerUint
 
