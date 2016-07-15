@@ -7,7 +7,7 @@ package bits
 // prefix: sbs
 
 import (
-	"gopkg.in/pi/goal/md"
+	"github.com/pi/goal/md"
 )
 
 const sbsBitsPerChunkSizeShift = 10

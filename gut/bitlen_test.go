@@ -3,7 +3,7 @@ package gut
 import (
 	"testing"
 
-	"gopkg.in/pi/goal/th"
+	"github.com/pi/goal/th"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"gopkg.in/pi/goal/md"
+	"github.com/pi/goal/md"
 )
 
 type UnsafeMemoryPool struct {

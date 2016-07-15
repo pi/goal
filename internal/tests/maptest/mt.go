@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	. "gopkg.in/pi/goal/gut"
-	"gopkg.in/pi/goal/hash"
-	"gopkg.in/pi/goal/th"
+	. "github.com/pi/goal/gut"
+	"github.com/pi/goal/hash"
+	"github.com/pi/goal/th"
 )
 
 var _ = gob.NewEncoder

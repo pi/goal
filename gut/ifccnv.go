@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"gopkg.in/pi/goal/md"
+	"github.com/pi/goal/md"
 )
 
 var (

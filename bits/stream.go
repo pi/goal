@@ -1,6 +1,6 @@
 package bits
 
-import "gopkg.in/pi/goal/md"
+import "github.com/pi/goal/md"
 
 var _ = md.BitsPerUint
 

@@ -19,8 +19,8 @@ import (
 	"sort"
 	"time"
 
-	"gopkg.in/pi/goal/hash"
-	"gopkg.in/pi/goal/th"
+	"github.com/pi/goal/hash"
+	"github.com/pi/goal/th"
 )
 
 var useNative = true

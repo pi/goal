@@ -3,7 +3,7 @@ package bits
 import (
 	"io"
 
-	"gopkg.in/pi/goal/md"
+	"github.com/pi/goal/md"
 )
 
 type BitReader struct {

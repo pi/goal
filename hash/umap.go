@@ -9,7 +9,7 @@ package hash
 // prefix: uum
 
 import (
-	"gopkg.in/pi/goal/md"
+	"github.com/pi/goal/md"
 )
 
 type uumEntry struct {

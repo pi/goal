@@ -5,9 +5,9 @@ package hash
 import (
 	"testing"
 
-	"gopkg.in/pi/goal/th"
+	"github.com/pi/goal/th"
 
-	. "gopkg.in/pi/goal/internal/testhelpers"
+	. "github.com/pi/goal/internal/testhelpers"
 
 	"github.com/stretchr/testify/assert"
 )
