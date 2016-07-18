@@ -5,9 +5,9 @@ package hash
 import (
 	"testing"
 
-	"github.com/ardente/goal/th"
+	"github.com/pi/goal/th"
 
-	. "github.com/ardente/goal/internal/testhelpers"
+	. "github.com/pi/goal/internal/testhelpers"
 
 	"github.com/stretchr/testify/assert"
 )

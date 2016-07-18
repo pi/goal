@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/ardente/goal/md"
+	"github.com/pi/goal/md"
 )
 
 type UnsafeMemoryPool struct {

@@ -4,7 +4,7 @@ package bits
 // BitSlice
 //
 
-import "github.com/ardente/goal/md"
+import "github.com/pi/goal/md"
 
 type BitSlice struct {
 	len  uint

@@ -7,7 +7,7 @@ package bits
 // prefix: sbs
 
 import (
-	"github.com/ardente/goal/md"
+	"github.com/pi/goal/md"
 )
 
 const sbsBitsPerChunkSizeShift = 10

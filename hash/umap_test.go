@@ -3,8 +3,8 @@ package hash
 import (
 	"testing"
 
-	. "github.com/ardente/goal/internal/testhelpers"
-	"github.com/ardente/goal/th"
+	. "../internal/testhelpers"
+	"../th"
 	"github.com/stretchr/testify/assert"
 )
 

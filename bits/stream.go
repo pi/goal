@@ -1,6 +1,6 @@
 package bits
 
-import "github.com/ardente/goal/md"
+import "github.com/pi/goal/md"
 
 var _ = md.BitsPerUint
 

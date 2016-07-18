@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ardente/goal/gut"
+	"github.com/pi/goal/gut"
 )
 
 var n = 20

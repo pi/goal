@@ -3,7 +3,7 @@ package bits
 import (
 	"testing"
 
-	_ "github.com/ardente/goal/th"
+	_ "github.com/pi/goal/th"
 	"github.com/stretchr/testify/assert"
 )
 
