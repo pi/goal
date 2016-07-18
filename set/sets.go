@@ -1,7 +1,10 @@
+//
+// Package set implements StringSet and IntSet
+//
 package set
 
 //
-// StringSet - set of strings. Defined as map[string]bool
+// StringSet - set of strings. Defined as map[string]struct{}
 //
 type StringSet map[string]struct{}
 
