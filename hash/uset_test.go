@@ -105,3 +105,16 @@ func TestUsetIntersection(t *testing.T) {
 func TestUsetCopy(t *testing.T) {
 	//	t.Fail()
 }
+
+func TestUsetFirstNext(t *testing.T) {
+	s := NewUintSet()
+	for i := uint(0); i < 10; i++ {
+		s.Add(i)
+	}
+	n := 0
+	for v, ok := s.First(); ok; v, ok = s.Next(v) {
+		assert.True(t, v >= 0 && v < 10)
+		n++
+	}
+	assert.EqualValues(t, n, 10)
+}

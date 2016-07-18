@@ -7,12 +7,112 @@ package hash
 
 // prefix: us
 
+//
+// UintSet contains unsigned integers without repetitions.
+//
+// CAUTION: never modify set during iteration!
+//
+type UintSet struct {
+	dirBits uint        // current tree level
+	hasZero bool        // special flag because 0 marks empty slot
+	dir     []*usBucket // flatten tree of buckets
+	count   uint        // number of elements in set (for speed up access to count)
+	w       bool        // write flag, used with race detector
+}
+
 type usBucket struct {
 	bits   uint
 	count  uint
 	values [entriesPerHashBucket]uint
 }
 
+func (s *UintSet) readaccess() {
+	if s.w {
+		panic("concurrent read/write")
+	}
+}
+
+// inline iteration:
+// for bi, ei := set.seekFirst(); bi != i1; bi, ei = set.seekNext(bi, ei) {
+//		var value uint
+//		if ei == -1 {
+//			value = 0
+//		else {
+//     		value := set.dir[bi].values[ei]
+//		}
+//		...
+// }
+func (s *UintSet) seekFirst() (int, int) {
+	if race {
+		s.readaccess()
+	}
+	if s.hasZero {
+		return 0, -1
+	} else if s.count == 0 {
+		return -1, -1
+	} else {
+		return s.seekNext(0, -1)
+	}
+}
+func (s *UintSet) seekNext(bi, ei int) (int, int) {
+	if race {
+		s.readaccess()
+	}
+	if ei == -1 {
+		if bi != 0 {
+			panic("bad iteration order")
+		}
+	}
+	ei++
+	for {
+		b := s.dir[bi]
+		for ; ei < entriesPerHashBucket; ei++ {
+			if b.values[ei] != 0 {
+				return bi, ei
+			}
+		}
+		for ; bi < len(s.dir) && s.dir[bi] == b; bi++ {
+		}
+		if bi == len(s.dir) {
+			return -1, -1
+		}
+	}
+}
+func (s *UintSet) seekTo(elt uint) (int, int) {
+	if race {
+		s.readaccess()
+	}
+	if elt == 0 {
+		if s.hasZero {
+			return 0, -1
+		} else {
+			return -1, -1
+		}
+	}
+	// locate prev element's slot
+	valueHash := uintHashCode(elt)
+	bi := int(valueHash >> (bitsPerHashCode - s.dirBits))
+	ei := int(valueHash % entriesPerHashBucket)
+	b := s.dir[bi]
+	homeIndex := ei
+	for {
+		if b.values[ei] == elt {
+			return bi, ei
+		}
+		if b.values[ei] == 0 {
+			return -1, -1
+		}
+		ei = (ei + 1) % entriesPerHashBucket
+		if ei == homeIndex {
+			return -1, -1
+		}
+	}
+}
+
+//
+// UintSetIterator allows iteration over set.
+// CAUTION: never modify set during iteration!
+//
 type UintSetIterator struct {
 	s                               *UintSet
 	started                         bool
@@ -26,55 +126,27 @@ func (it *UintSetIterator) Reset() {
 func (it *UintSetIterator) Next() bool {
 	if !it.started {
 		it.started = true
-		it.curBucketIndex = 0
-		it.curElementIndex = -1
-		if it.s.hasZero {
-			return true
-		}
+		it.curBucketIndex, it.curElementIndex = it.s.seekFirst()
+	} else {
+		it.curBucketIndex, it.curElementIndex = it.s.seekNext(it.curBucketIndex, it.curElementIndex)
 	}
-	if it.curBucketIndex == len(it.s.dir) {
-		return false
-	}
-	for {
-		it.curElementIndex++
-		if it.curElementIndex == entriesPerHashBucket {
-			it.curElementIndex = 0
-			for {
-				it.curBucketIndex++
-				if it.curBucketIndex == len(it.s.dir) {
-					return false
-				}
-				if it.s.dir[it.curBucketIndex] != it.s.dir[it.curBucketIndex-1] {
-					break
-				}
-			}
-		}
-		if it.s.dir[it.curBucketIndex].values[it.curElementIndex] != 0 {
-			return true
-		}
-	}
+	return it.curBucketIndex != -1
 }
 func (it *UintSetIterator) Cur() uint {
 	if !it.started {
-		panic("accessing unstarted iter")
+		panic("no current element")
 	}
 	if it.curElementIndex == -1 {
 		return 0
 	}
 	return it.s.dir[it.curBucketIndex].values[it.curElementIndex]
 }
-
-//
-// UintSet
-//
-type UintSet struct {
-	dirBits uint
-	hasZero bool
-	dir     []*usBucket
-	count   uint
+func (it *UintSetIterator) Seek(target uint) bool {
+	it.curBucketIndex, it.curElementIndex = it.s.seekTo(target)
+	return it.curBucketIndex != -1
 }
 
-// Public functions
+// UintSet methods
 
 func NewUintSet() *UintSet {
 	s := &UintSet{}
@@ -95,7 +167,11 @@ func (s *UintSet) Clear() {
 	s.init(4)
 }
 
+// Clone returns exact copy of the receiver
 func (s *UintSet) Clone() *UintSet {
+	if race {
+		s.readaccess()
+	}
 	r := &UintSet{}
 	r.count = s.count
 	r.dir = make([]*usBucket, len(s.dir))
@@ -111,6 +187,7 @@ func (s *UintSet) Clone() *UintSet {
 	return r
 }
 
+// Copy returns a set with all of the receiver's elements.
 func (s *UintSet) Copy() *UintSet {
 	r := NewUintSet()
 	for it := r.Iterator(); it.Next(); {
@@ -129,8 +206,27 @@ func (s *UintSet) Includes(value uint) bool {
 	}
 	return s.find(value, false)
 }
-
+func concwrite() {
+	panic("concurrent write")
+}
+func (s *UintSet) beginWrite() {
+	if s.w {
+		concwrite()
+	}
+	s.w = true
+}
+func (s *UintSet) endWrite() {
+	if s.w {
+		s.w = false
+	} else {
+		concwrite()
+	}
+}
 func (s *UintSet) Add(value uint) {
+	if race {
+		s.beginWrite()
+		defer s.endWrite()
+	}
 	if value == 0 {
 		if !s.hasZero {
 			s.hasZero = true
@@ -142,6 +238,10 @@ func (s *UintSet) Add(value uint) {
 }
 
 func (s *UintSet) Delete(value uint) bool {
+	if race {
+		s.beginWrite()
+		defer s.endWrite()
+	}
 	if value == 0 {
 		if s.hasZero {
 			s.hasZero = false
@@ -339,6 +439,74 @@ func (s *UintSet) find(value uint, addIfNotExists bool) bool {
 	b.values[elementIndex] = value
 	s.count++
 	return true
+}
+
+// First returns first element in set with no particular order. Second return value is an indicator of element presence.
+// CAUTION: never modify set during iteration!
+func (s *UintSet) First() (uint, bool) {
+	bi, ei := s.seekFirst()
+	if bi == -1 {
+		return 0, false
+	}
+	if ei == -1 {
+		return 0, true
+	}
+	return s.dir[bi].values[ei], true
+}
+
+// Next returns element after prev in no particular order. Second return value is an indicator of element presence.
+// CAUTION: never modify set during iteration!
+func (s *UintSet) Next(prev uint) (uint, bool) {
+	bi, ei := s.seekTo(prev)
+	if bi == -1 {
+		panic("prev not found")
+	}
+	bi, ei = s.seekNext(bi, ei)
+	if bi == -1 {
+		return 0, false
+	}
+	return s.dir[bi].values[ei], true
+}
+
+func (s *UintSet) Select(test func(v uint) bool) *UintSet {
+	result := NewUintSet()
+	for it := s.Iterator(); it.Next(); {
+		cur := it.Cur()
+		if test(cur) {
+			result.Add(cur)
+		}
+	}
+	return result
+}
+
+func (s *UintSet) Collect(transform func(v uint) uint) *UintSet {
+	result := NewUintSet()
+	for it := s.Iterator(); it.Next(); {
+		result.Add(transform(it.Cur()))
+	}
+	return result
+}
+
+func (s *UintSet) SelectThenCollect(test func(v uint) bool, transform func(v uint) uint) *UintSet {
+	result := NewUintSet()
+	for it := s.Iterator(); it.Next(); {
+		cur := it.Cur()
+		if test(cur) {
+			result.Add(transform(cur))
+		}
+	}
+	return result
+}
+
+// Reduce appends reducer to result of prev reduction and current element
+// example: calculate sum of set's elements:
+// sum := set.Reduce(0, func(a, b uint) uint {return a + b})
+func (s *UintSet) Reduce(initial uint, reducer func(prev, cur uint) uint) uint {
+	cur := initial
+	for it := s.Iterator(); it.Next(); {
+		cur = reducer(cur, it.Cur())
+	}
+	return cur
 }
 
 // answer approx amount of used memory
