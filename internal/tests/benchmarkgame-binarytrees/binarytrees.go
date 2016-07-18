@@ -86,10 +86,10 @@ func main() {
 	var wg sync.WaitGroup
 	result := make([]string, maxDepth+1)
 
-	gate := make(chan bool, runtime.NumCPU())
+	gate := make(chan struct{}, runtime.NumCPU())
 
 	for depth_l := minDepth; depth_l <= maxDepth; depth_l += 2 {
-		gate <- true
+		gate <- struct{}{}
 		wg.Add(1)
 		go func(depth int, check int, r *string) {
 			defer wg.Done()
