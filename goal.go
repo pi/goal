@@ -1,4 +1,4 @@
-// dummy package to go get all subpackages
+// dummy package to go build all subpackages
 package goal
 
 import (
