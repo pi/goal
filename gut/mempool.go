@@ -11,10 +11,7 @@ import (
 type UnsafeMemoryPool struct {
 	mem       []byte
 	allocated uint64
-}
-
-type SharedUnsafeMemoryPool struct {
-	UnsafeMemoryPool
+	shared    bool
 }
 
 func NewUnsafeMemoryPool(size uint) (*UnsafeMemoryPool, error) {
@@ -25,13 +22,17 @@ func NewUnsafeMemoryPool(size uint) (*UnsafeMemoryPool, error) {
 	}
 	return p, nil
 }
-func NewSharedUnsafeMemoryPool(size uint) (*SharedUnsafeMemoryPool, error) {
-	p := &SharedUnsafeMemoryPool{}
-	err := p.init(size)
+func NewSharedUnsafeMemoryPool(size uint) (*UnsafeMemoryPool, error) {
+	p, err := NewUnsafeMemoryPool(size)
 	if err != nil {
 		return nil, err
 	}
+	p.shared = true
 	return p, nil
+}
+
+func (p *UnsafeMemoryPool) IsShared() bool {
+	return p.shared
 }
 
 func (p *UnsafeMemoryPool) init(size uint) error {
@@ -56,15 +57,28 @@ func (p *UnsafeMemoryPool) Done() error {
 }
 func (p *UnsafeMemoryPool) Alloc(n uint) (block unsafe.Pointer) {
 	n = (n + 7) & ^uint(7)
-	if uint64(n) > (uint64(cap(p.mem)) - p.allocated) {
-		var null uintptr
-		return unsafe.Pointer(null) // work around internal compiler bug: go can't compile unsafe.Pointer(uintptr(0)) here
+	if p.shared {
+		for {
+			oldAllocated := p.allocated
+			newAllocated := oldAllocated + uint64(n)
+			if newAllocated < oldAllocated || newAllocated > uint64(cap(p.mem)) {
+				var null uintptr
+				return unsafe.Pointer(null) // work around internal compiler bug: Go can't compile unsafe.Pointer(uintptr(0)) here yet
+			}
+			if atomic.CompareAndSwapUint64(&p.allocated, oldAllocated, newAllocated) {
+				return unsafe.Pointer(&p.mem[oldAllocated])
+			}
+		}
+	} else {
+		if uint64(n) > (uint64(cap(p.mem)) - p.allocated) {
+			var null uintptr
+			return unsafe.Pointer(null) // work around internal compiler bug: go can't compile unsafe.Pointer(uintptr(0)) here
+		}
+		block = unsafe.Pointer(&p.mem[p.allocated])
+		p.allocated += uint64(n)
+		return block
 	}
-	block = unsafe.Pointer(&p.mem[p.allocated])
-	p.allocated += uint64(n)
-	return block
 }
-
 func (p *UnsafeMemoryPool) allocSlice(n uint, bytesPerElement uint) *reflect.SliceHeader {
 	ptr := uintptr(p.Alloc(n * bytesPerElement))
 	if ptr == 0 {
@@ -109,19 +123,5 @@ func (p *UnsafeMemoryPool) AllocFloats64(n uint) []float64 {
 		return nil
 	} else {
 		return *(*[]float64)(unsafe.Pointer(sh))
-	}
-}
-func (p *SharedUnsafeMemoryPool) Alloc(n uint) unsafe.Pointer {
-	alignedSize := uint64(n+7) & ^uint64(7)
-	for {
-		oldAllocated := p.allocated
-		newAllocated := oldAllocated + alignedSize
-		if newAllocated < oldAllocated || newAllocated > uint64(cap(p.mem)) {
-			var null uintptr
-			return unsafe.Pointer(null) // work around internal compiler bug: Go can't compile unsafe.Pointer(uintptr(0)) here yet
-		}
-		if atomic.CompareAndSwapUint64(&p.allocated, oldAllocated, newAllocated) {
-			return unsafe.Pointer(&p.mem[oldAllocated])
-		}
 	}
 }

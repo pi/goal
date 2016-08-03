@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	kernelDLL         = syscall.NewLazyDLL("kernel32.dll")
-	_VirtualAllocAddr = kernelDLL.NewProc("VirtualAlloc").Addr()
-	_VirtualFreeAddr  = kernelDLL.NewProc("VirtualFree").Addr()
+	kernelDLL         = syscall.MustLoadDLL("kernel32.dll")
+	_VirtualAllocAddr = kernelDLL.MustFindProc("VirtualAlloc").Addr()
+	_VirtualFreeAddr  = kernelDLL.MustFindProc("VirtualFree").Addr()
 )
 
 const (
