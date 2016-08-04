@@ -1,11 +1,13 @@
 package rb
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/pi/goal/th"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,86 +18,141 @@ func psum(a []byte) (sum int) {
 	return
 }
 
-func TestThroughput(t *testing.T) {
-	const N = 1000000
-	const S = 32
-	const BS = S * 1000
+func pcheck(a []byte) int {
+	return int(a[0]) + int(a[len(a)-1])
+}
+
+const kN = 10000
+const kS = 32
+const kBS = kS * 10000
+const kN_GORO = 10000
+
+func testThroughputHelper(mwg *sync.WaitGroup) {
 	wg := sync.WaitGroup{}
-	b := NewRingBuf(BS)
-	b.ReadTimeout = time.Hour
-	b.WriteTimeout = time.Hour
-	m := make([]byte, S)
+	b := NewRingBuf(kBS)
+	m := make([]byte, kS)
 	for i, _ := range m {
 		m[i] = byte(i)
 	}
-	rm := make([]byte, S)
-	st := time.Now()
-	rsum := 0
-	wsum := 0
+	rm := make([]byte, kS)
 	wg.Add(2)
 	go func() {
-		for i := 0; i < N; i++ {
+		for i := 0; i < kN; i++ {
 			b.Write(m)
-			wsum += psum(m)
 		}
 		wg.Done()
 	}()
 	go func() {
-		for nr := 0; nr < N; {
-			/*n, _ :=*/ b.Read(rm)
-
+		for nr := 0; nr < kN; {
+			b.ReadS(rm)
 			nr++
-			rsum += psum(rm)
 		}
 		wg.Done()
 	}()
 	wg.Wait()
-	require.EqualValues(t, wsum, rsum)
-	timeSpent := time.Since(st)
-	fmt.Printf("time spent: %v, %d MPS, rs: %v, ws: %v rwc:%d wwc:%d\n", timeSpent, int(N/timeSpent.Seconds()), b.rs, b.ws, b.rwc, b.wwc)
-
-	rsum = 0
-	wsum = 0
-	st = time.Now()
-	tb := make([]byte, S)
-	for i := 0; i < N; i++ {
-		copy(tb, m)
-		//wsum += psum(m)
-		copy(rm, tb)
-		//rsum += psum(rm)
-	}
-	require.EqualValues(t, wsum, rsum)
-	fmt.Printf("copy time: %v\n", time.Since(st))
-
-	res := make(chan int, 2)
-	c := make(chan []byte, 1000)
-	wg = sync.WaitGroup{}
-	wg.Add(2)
-	go func() {
-		sum := 0
-		for i := 0; i < N; i++ {
-			sum += psum(m)
-			c <- m
-		}
-		res <- sum
-		wg.Done()
-	}()
-	go func() {
-		sum := 0
-		r := make([]byte, S)
-		for i := 0; i < N; i++ {
-			r = <-c
-			sum += psum(r)
-		}
-		res <- sum
-		wg.Done()
-	}()
-	wg.Wait()
-	require.EqualValues(t, <-res, <-res)
-	fmt.Printf("channels time: %v\n", time.Since(st))
+	mwg.Done()
 }
 
-func TestRingBufferStrings(t *testing.T) {
+func xferSpeed(nmsg uint64, elapsed time.Duration) string {
+	return fmt.Sprintf("%dMPS, %s/s", int64(float64(nmsg)/elapsed.Seconds()), th.MemString(uint64(float64(nmsg)*kS/elapsed.Seconds())))
+}
+
+func TestParallelThroughput(t *testing.T) {
+	st := time.Now()
+	sm := th.TotalAlloc()
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_GORO)
+	for i := 0; i < kN_GORO; i++ {
+		testThroughputHelper(wg)
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*kN_GORO, elapsed), th.MemSince(sm))
+}
+
+func testParallelBuffersHelper(wg *sync.WaitGroup) {
+	m := make([]byte, kS)
+	for i := 0; i < kS; i++ {
+		m[i] = byte(i + 2)
+	}
+	tb := make([]byte, kS*5)
+	rm := make([]byte, kS)
+	wb := bytes.NewBuffer(tb)
+	rb := bytes.NewReader(tb)
+	for i := 0; i < kN; i++ {
+		wb.Reset()
+		wb.Write(m)
+
+		rb.Seek(0, 0)
+		rb.Read(rm)
+		if rm[0] != m[0] {
+			panic("mismatch")
+		}
+	}
+	wg.Done()
+}
+func TestParallelBuffers(t *testing.T) {
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_GORO)
+	st := time.Now()
+	sm := th.CurAlloc()
+	for i := 0; i < kN_GORO; i++ {
+		go testParallelBuffersHelper(wg)
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("parallel buffers time: %v, %s, mem:%s\n", elapsed, xferSpeed(kN_GORO*kN, elapsed), th.MemSince(sm))
+}
+
+func testParallelChannelsHelper(dwg *sync.WaitGroup) {
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	c := make(chan []byte, 10)
+	m := make([]byte, kS)
+	go func() {
+		for i := 0; i < kN; i++ {
+			c <- m
+		}
+		wg.Done()
+	}()
+	go func() {
+		r := make([]byte, kS)
+		for i := 0; i < kN; i++ {
+			copy(r, <-c)
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+	dwg.Done()
+}
+func TestParallelChannels(t *testing.T) {
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_GORO)
+	st := time.Now()
+	sm := th.CurAlloc()
+	for i := 0; i < kN_GORO; i++ {
+		testParallelChannelsHelper(wg)
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("parallel channels time: %v, %s, mem:%s\n", elapsed, xferSpeed(kN*kN_GORO, elapsed), th.MemSince(sm))
+}
+
+func TestRwSpeed(t *testing.T) {
+	b := NewRingBuf(kBS)
+	m := make([]byte, kS)
+	const kN = kN * 100
+	rm := make([]byte, kS)
+	st := time.Now()
+	for i := 0; i < kN; i++ {
+		b.Write(m)
+		b.ReadS(rm)
+	}
+	elapsed := time.Since(st)
+	fmt.Printf("rw time: %v, %s\n", elapsed, xferSpeed(kN, elapsed))
+}
+
+func _TestRingBufferStrings(t *testing.T) {
 	const N = 11
 	b := NewRingBuf(N)
 	ws := func(str string) {

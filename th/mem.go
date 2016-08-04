@@ -21,16 +21,21 @@ func CurAlloc() uint64 {
 	return CurMemStats().Alloc
 }
 
-func MemSince(prev uint64) string {
-	v := TotalAlloc() - prev
+func MemString(v uint64) string {
 	if v < 1024 {
 		return fmt.Sprintf("%d", v)
 	} else if v < 1024*1024 {
 		return fmt.Sprintf("%d (%.2f KiB)", v, float64(v)/float64(1024))
 	} else if v < 1024*1024*1024 {
 		return fmt.Sprintf("%d (%.2f MiB)", v, float64(v)/float64(1024*1024))
+	} else if v < 1024*1024*1024*1024 {
+		return fmt.Sprintf("%d (%.2f GiB)", v, float64(v)/float64(1024*1024*1024))
 	}
-	return fmt.Sprintf("%d (%.2f GiB)", v, float64(v)/float64(1024*1024*1024))
+	return fmt.Sprintf("%d (%.2f TiB)", v, float64(v)/float64(1024*1024*1024*1024))
+}
+
+func MemSince(prev uint64) string {
+	return MemString(TotalAlloc() - prev)
 }
 
 func ReportMemDelta(prev uint64) {

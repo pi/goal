@@ -8,22 +8,13 @@ import (
 )
 
 const infinite = time.Duration(0x7FFFFFFFFFFFFFFF)
-const pollPeriod = 10 * time.Nanosecond
+const pollPeriod = 100 * time.Nanosecond
 
 type RingBuf struct {
 	headAndSize uint64
-	wwc         int64
-	rwc         int64
-
-	mem          []byte
-	max          uint32
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-
-	wt time.Timer
-	rt time.Timer
-
-	ws, rs time.Duration
+	mem         []byte
+	max         uint32
+	ReadTimeout time.Duration
 }
 
 func NewRingBuf(max uint32) *RingBuf {
@@ -85,7 +76,11 @@ func (b *RingBuf) read(data []byte, moveReadPosition bool) uint32 {
 	return toRead
 }
 
-func (b *RingBuf) ReadWithTimeout(data []byte, timeout time.Duration) (int, error) {
+func (b *RingBuf) Clear() {
+	atomic.StoreUint64(&b.headAndSize, 0)
+}
+
+func (b *RingBuf) ReadWithTimeout(data []byte, timeout time.Duration) uint32 {
 	toRead := uint32(len(data))
 	ra := b.ReadAvail()
 	if ra >= toRead {
@@ -94,35 +89,13 @@ func (b *RingBuf) ReadWithTimeout(data []byte, timeout time.Duration) (int, erro
 		if nr != toRead {
 			badRead()
 		}
-		return len(data), nil
+		return toRead
 	}
 
 	// hard case: no enough data. read till timeout
-	/*
-		atomic.AddInt64(&b.rwc, 1)
-		periods := int64(timeout / pollPeriod)
-		readed := uint32(0)
-		for i := int64(0); i <= periods; i++ { // <= periods to do at least one read
-			ra = minU32(b.ReadAvail(), toRead-readed)
-			if ra > 0 {
-				nr := b.read(data[readed:readed+ra], true)
-				if nr != ra {
-					badRead()
-				}
-				readed += nr
-				if readed == toRead {
-					return int(readed), nil
-				}
-			}
-			if i != periods {
-				time.Sleep(pollPeriod)
-				b.rs += pollPeriod
-			}
-		}
-	*/
-	tmr := time.NewTimer(timeout)
 	readed := uint32(0)
-	for readed < toRead {
+	periods := int64(timeout / pollPeriod)
+	for i := int64(0); i <= periods; i++ { // <= periods to do at least one read
 		ra = minU32(b.ReadAvail(), toRead-readed)
 		if ra > 0 {
 			nr := b.read(data[readed:readed+ra], true)
@@ -131,20 +104,66 @@ func (b *RingBuf) ReadWithTimeout(data []byte, timeout time.Duration) (int, erro
 			}
 			readed += nr
 			if readed == toRead {
-				return int(readed), nil
+				return readed
 			}
 		}
-		select {
-		case <-tmr.C:
-			return int(readed), io.EOF
+		if i != periods {
+			time.Sleep(pollPeriod)
 		}
-		runtime.Gosched()
 	}
-	return int(readed), io.EOF
+	return readed
 }
 
 func (b *RingBuf) Read(data []byte) (int, error) {
-	return b.ReadWithTimeout(data, b.ReadTimeout)
+	var readed uint32
+	if b.ReadTimeout == 0 {
+		readed = b.ReadWithTimeout(data, infinite)
+	} else {
+		readed = b.ReadWithTimeout(data, b.ReadTimeout)
+	}
+	if readed < uint32(len(data)) {
+		return int(readed), io.EOF
+	} else {
+		return int(readed), nil
+	}
+}
+
+func (b *RingBuf) ReadS(data []byte) uint32 {
+	readed := uint32(0)
+	toRead := uint32(len(data))
+	hs, head, sz := b.loadHS()
+	for readed < toRead {
+		if sz > 0 {
+			nr := minU32(sz, toRead-readed)
+			if head+toRead > b.max {
+				// wrapped
+				ll := b.max - head
+				copy(data[readed:readed+ll], b.mem[head:head+ll])
+				copy(data[readed+ll:readed+nr], b.mem[0:nr-ll])
+			} else {
+				copy(data[readed:readed+nr], b.mem[head:head+nr])
+			}
+			for {
+				sz -= nr
+				if sz == 0 {
+					head = 0
+				} else {
+					head = (head + toRead) % b.max
+				}
+				nhs := (uint64(head) << 32) | uint64(sz)
+				if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
+					break
+				}
+				runtime.Gosched()
+				hs, head, sz = b.loadHS()
+			}
+			readed += nr
+		} else {
+			runtime.Gosched()
+			hs, head, sz = b.loadHS()
+		}
+	}
+	return readed
 }
 
 // ReadAll read all or nothing from RingBuf. wait for ReadTimeout for data if there is no enough data
@@ -200,7 +219,6 @@ func (b *RingBuf) ReadWait(min uint32, timeout time.Duration) bool {
 		}
 		if i != periods {
 			time.Sleep(pollPeriod)
-			b.rs += pollPeriod
 		}
 	}
 	return false
@@ -221,40 +239,67 @@ func (b *RingBuf) WriteWait(min uint32, timeout time.Duration) bool {
 		}
 		if i != periods {
 			time.Sleep(pollPeriod)
-			b.ws += pollPeriod
 		}
 	}
 	return false
 }
 
-func (b *RingBuf) Skip(n uint32) uint32 {
-	if n == 0 {
+func (b *RingBuf) SkipWithTimeout(toSkip uint32, timeout time.Duration) uint32 {
+	if toSkip == 0 {
 		return 0
 	}
 	hs, head, sz := b.loadHS()
-	if n > sz {
-		n = sz
-	}
-	for {
-		sz -= n
-		if sz == 0 {
-			head = 0
+	skipped := uint32(0)
+	periods := int64(timeout / pollPeriod)
+	for i := int64(0); i <= periods; i++ {
+		if sz > 0 {
+			n := minU32(toSkip-skipped, sz)
+			for {
+				sz -= n
+				if sz == 0 {
+					head = 0
+				} else {
+					head = (head + n) % b.max
+				}
+				nhs := (uint64(head) << 32) | uint64(sz)
+				if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
+					break
+				}
+				runtime.Gosched()
+				hs, head, sz = b.loadHS()
+			}
+			skipped += n
+			if skipped == toSkip {
+				return toSkip
+			}
 		} else {
-			head = (head + n) % b.max
+			if i != periods {
+				time.Sleep(pollPeriod)
+			}
 		}
-		nhs := (uint64(head) << 32) | uint64(sz)
-		if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
-			break
-		}
-		runtime.Gosched()
 		hs, head, sz = b.loadHS()
 	}
-	return n
+	return skipped
+}
+
+// Skip with default timeout (blocking if b.ReadTimeout is not set)
+func (b *RingBuf) Skip(toSkip uint32) uint32 {
+	if b.ReadTimeout == 0 {
+		return b.SkipWithTimeout(toSkip, infinite)
+	} else {
+		return b.SkipWithTimeout(toSkip, b.ReadTimeout)
+	}
+}
+
+func (b *RingBuf) Avail() (readAvail uint32, writeAvail uint32) {
+	hs := atomic.LoadUint64(&b.headAndSize)
+	readAvail = uint32(hs)
+	writeAvail = b.max - readAvail
+	return
 }
 
 func (b *RingBuf) ReadAvail() uint32 {
-	hs := atomic.LoadUint64(&b.headAndSize)
-	return uint32(hs)
+	return uint32(atomic.LoadUint64(&b.headAndSize))
 }
 
 func (b *RingBuf) WriteAvail() uint32 {
@@ -278,63 +323,39 @@ func (b *RingBuf) ReadString(maxSize int) (string, error) {
 	return string(data[:nr]), err
 }
 
-func (b *RingBuf) write(data []byte) uint32 {
-	hs, head, sz := b.loadHS()
-	writePos := (head + sz) % b.max
-	toWrite := minU32(b.max-sz, uint32(len(data)))
-	if writePos+toWrite > b.max {
-		// wrapped
-		ll := b.max - writePos
-		if ll > 0 {
-			copy(b.mem[writePos:b.max], data[0:ll])
-			copy(b.mem[0:toWrite-ll], data[ll:toWrite])
-		} else {
-			copy(b.mem[0:toWrite], data)
-		}
-	} else {
-		copy(b.mem[writePos:writePos+toWrite], data)
-	}
-	for {
-		sz += toWrite
-		nhs := (uint64(head) << 32) | uint64(sz)
-		if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
-			break
-		}
-		runtime.Gosched()
-		hs, head, sz = b.loadHS()
-	}
-	return toWrite
-}
-
-// Write data to ringbuf. Returns number of bytes written
-func (b *RingBuf) WriteWithTimeout(data []byte, timeout time.Duration) (int, error) {
-	toWrite := uint32(len(data))
-	if b.WriteAvail() >= toWrite {
-		// easy case: there is enough space in buffer
-		b.write(data)
-		return int(toWrite), nil
-	}
-
-	atomic.AddInt64(&b.wwc, 1)
+func (b *RingBuf) Write(data []byte) (int, error) {
 	written := uint32(0)
-	periods := int64(timeout / pollPeriod)
-	for i := int64(0); i <= periods; i++ {
-		wa := b.WriteAvail()
-		if wa > 0 {
-			written += b.write(data[written:toWrite])
-			if written == toWrite {
+	toWrite := uint32(len(data))
+	for written < toWrite {
+		hs, head, sz := b.loadHS()
+		writePos := (head + sz) % b.max
+		nw := minU32(b.max-sz, toWrite-written)
+		if nw == 0 {
+			runtime.Gosched()
+			continue
+		}
+		if writePos+nw > b.max {
+			// wrapped
+			ll := b.max - writePos
+			if ll > 0 {
+				copy(b.mem[writePos:b.max], data[written:written+ll])
+				copy(b.mem[0:nw-ll], data[written+ll:written+nw])
+			} else {
+				copy(b.mem[0:nw], data[written:written+nw])
+			}
+		} else {
+			copy(b.mem[writePos:writePos+nw], data[written:written+nw])
+		}
+		for {
+			sz += nw
+			nhs := (uint64(head) << 32) | uint64(sz)
+			if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
 				break
 			}
+			runtime.Gosched()
+			hs, head, sz = b.loadHS()
 		}
-		if i != periods {
-			time.Sleep(pollPeriod)
-			b.ws += pollPeriod
-		}
+		written += nw
 	}
-
 	return int(written), nil
-}
-
-func (b *RingBuf) Write(data []byte) (int, error) {
-	return b.WriteWithTimeout(data, b.WriteTimeout)
 }
