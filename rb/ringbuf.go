@@ -5,22 +5,28 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+
+	"github.com/pi/goal/gut"
 )
 
 const infinite = time.Duration(0x7FFFFFFFFFFFFFFF)
-const pollPeriod = 100 * time.Nanosecond
+const pollPeriod = time.Microsecond
 
 type RingBuf struct {
 	headAndSize uint64
 	mem         []byte
-	max         uint32
+	mask        uint32
 	ReadTimeout time.Duration
 }
 
 func NewRingBuf(max uint32) *RingBuf {
+	if max < 32 {
+		max = 32
+	}
+	max = 1 << uint(gut.BitLen(uint(max)))
 	return &RingBuf{
-		mem: make([]byte, int(max), int(max)),
-		max: max,
+		mem:  make([]byte, int(max)),
+		mask: max - 1,
 	}
 }
 
@@ -49,9 +55,9 @@ func (b *RingBuf) read(data []byte, moveReadPosition bool) uint32 {
 	if toRead > sz {
 		toRead = sz
 	}
-	if head+toRead > b.max {
+	if head+toRead > uint32(len(b.mem)) {
 		// wrapped
-		ll := b.max - head
+		ll := uint32(len(b.mem)) - head
 		copy(data[0:ll], b.mem[head:head+ll])
 		copy(data[ll:toRead], b.mem[0:toRead-ll])
 	} else {
@@ -63,7 +69,7 @@ func (b *RingBuf) read(data []byte, moveReadPosition bool) uint32 {
 			if sz == 0 {
 				head = 0
 			} else {
-				head = (head + toRead) % b.max
+				head = (head + toRead) & b.mask
 			}
 			nhs := (uint64(head) << 32) | uint64(sz)
 			if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
@@ -80,34 +86,55 @@ func (b *RingBuf) Clear() {
 	atomic.StoreUint64(&b.headAndSize, 0)
 }
 
-func (b *RingBuf) ReadWithTimeout(data []byte, timeout time.Duration) uint32 {
-	toRead := uint32(len(data))
-	ra := b.ReadAvail()
-	if ra >= toRead {
-		// easy case: have enough data to read
-		nr := b.read(data, true)
-		if nr != toRead {
-			badRead()
-		}
-		return toRead
-	}
+func (b *RingBuf) ReadByte() (byte, error) {
+	var buf [1]byte
+	_, err := b.Read(buf[:])
+	return buf[0], err
+}
 
-	// hard case: no enough data. read till timeout
+func (b *RingBuf) WriteByte(c byte) error {
+	var buf [1]byte
+	buf[0] = c
+	b.Write(buf[:])
+	return nil
+}
+
+func (b *RingBuf) ReadWithTimeout(data []byte, timeout time.Duration) uint32 {
 	readed := uint32(0)
+	readLimit := uint32(len(data))
 	periods := int64(timeout / pollPeriod)
-	for i := int64(0); i <= periods; i++ { // <= periods to do at least one read
-		ra = minU32(b.ReadAvail(), toRead-readed)
-		if ra > 0 {
-			nr := b.read(data[readed:readed+ra], true)
-			if nr != ra {
-				badRead()
+	for readed < readLimit { // <= periods to do at least one read
+		hs, head, sz := b.loadHS()
+		if sz > 0 {
+			nr := minU32(sz, readLimit-readed)
+			if head+nr > uint32(len(b.mem)) {
+				// wrapped
+				ll := uint32(len(b.mem)) - head
+				copy(data[readed:readed+ll], b.mem[head:head+ll])
+				copy(data[readed+ll:readed+nr], b.mem[0:nr-ll])
+			} else {
+				copy(data[readed:readed+nr], b.mem[head:head+nr])
 			}
 			readed += nr
-			if readed == toRead {
-				return readed
+			for {
+				sz -= nr
+				if sz == 0 {
+					head = 0
+				} else {
+					head = (head + nr) & b.mask
+				}
+				nhs := (uint64(head) << 32) | uint64(sz)
+				if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
+					break
+				}
+				runtime.Gosched()
+				hs, head, sz = b.loadHS()
 			}
-		}
-		if i != periods {
+		} else {
+			periods--
+			if periods < 0 {
+				break
+			}
 			time.Sleep(pollPeriod)
 		}
 	}
@@ -126,44 +153,6 @@ func (b *RingBuf) Read(data []byte) (int, error) {
 	} else {
 		return int(readed), nil
 	}
-}
-
-func (b *RingBuf) ReadS(data []byte) uint32 {
-	readed := uint32(0)
-	toRead := uint32(len(data))
-	hs, head, sz := b.loadHS()
-	for readed < toRead {
-		if sz > 0 {
-			nr := minU32(sz, toRead-readed)
-			if head+toRead > b.max {
-				// wrapped
-				ll := b.max - head
-				copy(data[readed:readed+ll], b.mem[head:head+ll])
-				copy(data[readed+ll:readed+nr], b.mem[0:nr-ll])
-			} else {
-				copy(data[readed:readed+nr], b.mem[head:head+nr])
-			}
-			for {
-				sz -= nr
-				if sz == 0 {
-					head = 0
-				} else {
-					head = (head + toRead) % b.max
-				}
-				nhs := (uint64(head) << 32) | uint64(sz)
-				if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
-					break
-				}
-				runtime.Gosched()
-				hs, head, sz = b.loadHS()
-			}
-			readed += nr
-		} else {
-			runtime.Gosched()
-			hs, head, sz = b.loadHS()
-		}
-	}
-	return readed
 }
 
 // ReadAll read all or nothing from RingBuf. wait for ReadTimeout for data if there is no enough data
@@ -259,7 +248,7 @@ func (b *RingBuf) SkipWithTimeout(toSkip uint32, timeout time.Duration) uint32 {
 				if sz == 0 {
 					head = 0
 				} else {
-					head = (head + n) % b.max
+					head = (head + n) & b.mask
 				}
 				nhs := (uint64(head) << 32) | uint64(sz)
 				if atomic.CompareAndSwapUint64(&b.headAndSize, hs, nhs) {
@@ -294,7 +283,7 @@ func (b *RingBuf) Skip(toSkip uint32) uint32 {
 func (b *RingBuf) Avail() (readAvail uint32, writeAvail uint32) {
 	hs := atomic.LoadUint64(&b.headAndSize)
 	readAvail = uint32(hs)
-	writeAvail = b.max - readAvail
+	writeAvail = uint32(len(b.mem)) - readAvail
 	return
 }
 
@@ -303,11 +292,11 @@ func (b *RingBuf) ReadAvail() uint32 {
 }
 
 func (b *RingBuf) WriteAvail() uint32 {
-	return b.max - b.ReadAvail()
+	return uint32(len(b.mem)) - b.ReadAvail()
 }
 
 func (b *RingBuf) Cap() uint32 {
-	return b.max
+	return uint32(len(b.mem))
 }
 
 func (b *RingBuf) WriteString(s string) (int, error) {
@@ -328,17 +317,17 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 	toWrite := uint32(len(data))
 	for written < toWrite {
 		hs, head, sz := b.loadHS()
-		writePos := (head + sz) % b.max
-		nw := minU32(b.max-sz, toWrite-written)
+		writePos := (head + sz) & b.mask
+		nw := minU32(b.mask+1-sz, toWrite-written)
 		if nw == 0 {
 			runtime.Gosched()
 			continue
 		}
-		if writePos+nw > b.max {
+		if writePos+nw > (b.mask + 1) {
 			// wrapped
-			ll := b.max - writePos
+			ll := b.mask + 1 - writePos
 			if ll > 0 {
-				copy(b.mem[writePos:b.max], data[written:written+ll])
+				copy(b.mem[writePos:b.mask+1], data[written:written+ll])
 				copy(b.mem[0:nw-ll], data[written+ll:written+nw])
 			} else {
 				copy(b.mem[0:nw], data[written:written+nw])
