@@ -1,6 +1,6 @@
 package gut
 
-var smallBitLenTable = [16]int{
+var smallBitLenTable = [16]uint{
 	0,
 	1,
 	2,
@@ -19,7 +19,7 @@ var smallBitLenTable = [16]int{
 	4,
 }
 
-func BitLen(x uint) (n int) {
+func BitLen(x uint) (n uint) {
 	if x >= 0x80000000 {
 		x >>= 32
 		n += 32

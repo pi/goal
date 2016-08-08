@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"sync"
 	"testing"
@@ -12,6 +13,46 @@ import (
 	"github.com/pi/goal/th"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOvercap(t *testing.T) {
+	b := NewRingBuf(16)
+	m := make([]byte, 32)
+	_, err := rand.Read(m)
+	if err != nil {
+		panic("rand.Read error " + err.Error())
+	}
+	rm := make([]byte, 32)
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		readAll(b, rm)
+		wg.Done()
+	}()
+	go func() {
+		b.Write(m)
+		wg.Done()
+	}()
+	wg.Wait()
+	if crc32.ChecksumIEEE(m) != crc32.ChecksumIEEE(rm) {
+		t.Fatal("crc mismatch")
+	}
+}
+
+func TestRingBufferCap(t *testing.T) {
+	ck := func(n uint32, must uint32) {
+		b := NewRingBuf(n)
+		require.EqualValues(t, must, b.Cap())
+	}
+	ck(0, 2)
+	ck(1, 2)
+	ck(2, 2)
+	ck(3, 4)
+	ck(4, 4)
+	ck(5, 8)
+	ck(16, 16)
+	ck(31, 32)
+	ck(32, 32)
+}
 
 func TestRingBufferStrings(t *testing.T) {
 	const N = 11
@@ -40,21 +81,19 @@ func TestRingBufferStrings(t *testing.T) {
 	require.EqualValues(t, 0, b.ReadAvail())
 }
 
-func psum(a []byte) (sum int) {
-	for _, v := range a {
-		sum += int(v)
+var _ = crc32.ChecksumIEEE
+
+func psum(data []byte) (sum int) {
+	for _, b := range data {
+		sum += int(b)
 	}
 	return
-}
-
-func pcheck(a []byte) int {
-	return int(a[0]) + int(a[len(a)-1])
 }
 
 const kN = 10000
 const kS = 32
 const kBS = kS * 1000
-const kN_GORO = 10000
+const kN_PIPES = 10000
 
 func xferSpeed(nmsg uint64, elapsed time.Duration) string {
 	return fmt.Sprintf("mps:%.2fM, %s/s", float64(nmsg)*1000.0/float64(elapsed.Nanoseconds()), th.MemString(uint64(float64(nmsg)*kS/elapsed.Seconds())))
@@ -95,10 +134,26 @@ func send(w io.Writer, data []byte) {
 	writeAll(w, t[:])
 }
 
+func rbsend(w *RingBuf, data []byte) {
+	if len(data) > 255 {
+		panicf("packet too long: %d", len(data))
+	}
+	var l, cs [1]byte
+	l[0] = byte(len(data))
+	cs[0] = byte(psum(data))
+	nw, err := w.WriteChunks(l[:], data, cs[:])
+	if nw != len(data)+2 {
+		panic("RingBuf.WriteChunks fail")
+	}
+	if err != nil {
+		panic(err)
+	}
+}
+
 func readAll(r io.Reader, buf []byte) {
 	n, err := r.Read(buf)
 	if n != len(buf) {
-		panicf("unable to read data: %s", errstr(err))
+		panicf("short read (%d of %d): %s", n, len(buf), errstr(err))
 	}
 	if err != nil {
 		panic(err)
@@ -106,15 +161,16 @@ func readAll(r io.Reader, buf []byte) {
 }
 
 func recv(r io.Reader, pkt []byte) []byte {
-	var t [1]byte
-	readAll(r, t[:])
+	var a [1]byte
+	t := a[:]
+	readAll(r, t)
 	pktLen := int(uint(t[0]))
 	if pktLen > len(pkt) {
 		panicf("pkt buffer size %d too small for packet len %d", len(pkt), pktLen)
 	}
-	p := pkt[0:pktLen]
+	p := pkt[:pktLen]
 	readAll(r, p)
-	readAll(r, t[:])
+	readAll(r, t)
 	if byte(psum(p)) != t[0] {
 		panic("checksum error")
 	}
@@ -126,7 +182,7 @@ func bufferTestHelper() {
 	for i := 0; i < kS; i++ {
 		m[i] = byte(i + 2)
 	}
-	tb := make([]byte, kS*5)
+	tb := make([]byte, kBS)
 	rm := make([]byte, kS)
 	wb := bytes.NewBuffer(tb)
 	rb := bytes.NewReader(tb)
@@ -139,12 +195,12 @@ func bufferTestHelper() {
 	}
 }
 
-func TestParallelBuffers(t *testing.T) {
+func TestBufferThroughput(t *testing.T) {
 	wg := &sync.WaitGroup{}
-	wg.Add(kN_GORO)
+	wg.Add(kN_PIPES)
 	st := time.Now()
 	sm := th.TotalAlloc()
-	for i := 0; i < kN_GORO; i++ {
+	for i := 0; i < kN_PIPES; i++ {
 		go func() {
 			bufferTestHelper()
 			wg.Done()
@@ -152,33 +208,7 @@ func TestParallelBuffers(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("%v, %s, mem:%s\n", elapsed, xferSpeed(kN_GORO*kN, elapsed), th.MemSince(sm))
-}
-
-func TestSeqBufferThroughput(t *testing.T) {
-	st := time.Now()
-	sm := th.TotalAlloc()
-	for i := 0; i < 100; i++ {
-		bufferTestHelper()
-	}
-	elapsed := time.Since(st)
-	fmt.Printf("%v, %s, mem:%s\n", elapsed, xferSpeed(kN*100, elapsed), th.MemSince(sm))
-}
-
-func TestSeqThroughput(t *testing.T) {
-	b := NewRingBuf(kBS)
-	m := make([]byte, kS)
-	rand.Read(m)
-	const N = kN * 100
-	rm := make([]byte, kS)
-	st := time.Now()
-	sm := th.TotalAlloc()
-	for i := 0; i < N; i++ {
-		send(b, m)
-		recv(b, rm)
-	}
-	elapsed := time.Since(st)
-	fmt.Printf("%v, %s mem:%s\n", elapsed, xferSpeed(N, elapsed), th.MemSince(sm))
+	fmt.Printf("%v, %s, mem:%s\n", elapsed, xferSpeed(kN_PIPES*kN, elapsed), th.MemSince(sm))
 }
 
 func TestRing(t *testing.T) {
@@ -187,8 +217,6 @@ func TestRing(t *testing.T) {
 	rand.Read(m)
 	const N = kN * 100
 	rm := make([]byte, kS)
-	st := time.Now()
-	sm := th.TotalAlloc()
 	for i := 0; i < N; i++ {
 		for b.WriteAvail() < kS {
 			recv(b, rm)
@@ -198,29 +226,81 @@ func TestRing(t *testing.T) {
 	for b.ReadAvail() > 0 {
 		recv(b, rm)
 	}
-	elapsed := time.Since(st)
-	fmt.Printf("%v, %s mem:%s\n", elapsed, xferSpeed(N, elapsed), th.MemSince(sm))
 }
 
-func testParallelThroughputHelper(t *testing.T, n_pipes int) {
+func TestClosed(t *testing.T) {
+	b := NewRingBuf(10)
+	require.False(t, b.IsClosed())
+	b.Close()
+	require.True(t, b.IsClosed())
+	_, err := b.WriteString("t")
+	require.Equal(t, err, io.ErrClosedPipe)
+	_, err = b.ReadString(10)
+	require.Equal(t, err, io.EOF)
+
+	b.Reopen()
+	require.False(t, b.IsClosed())
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	b.WriteString("t")
+	b.Close()
+	{
+		var err error
+		var s string
+		var nw int
+
+		s, err = b.ReadString(2)
+		require.Equal(t, s, "t")
+		require.Equal(t, io.EOF, err)
+		nw, err = b.WriteString("t")
+		require.EqualValues(t, nw, 0)
+		require.Equal(t, io.ErrClosedPipe, err)
+	}
+
+	b.Reopen()
+	type res struct {
+		m   []byte
+		n   int
+		err error
+	}
+	c := make(chan res)
+	go func() {
+		m := make([]byte, 10)
+		n, err := b.Read(m)
+		c <- res{m, n, err}
+	}()
+	go func() {
+		b.Write([]byte{0xFE})
+		b.Close()
+	}()
+	r := <-c
+	require.EqualValues(t, r.n, 1)
+	require.EqualValues(t, r.m[0], 0xFE)
+	require.Equal(t, io.EOF, r.err)
+}
+
+func TestParallelThroughput(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	wg.Add(n_pipes * 2)
+	wg.Add(kN_PIPES * 2)
 	m := make([]byte, kS)
 	rand.Read(m)
 
 	sm := th.TotalAlloc()
-	for i := 0; i < n_pipes; i++ {
+	for i := 0; i < kN_PIPES; i++ {
 		b := NewRingBuf(kBS)
 		go func() {
 			for i := 0; i < kN; i++ {
-				send(b, m)
+				//b.Write(m) //
+				rbsend(b, m)
 			}
 			wg.Done()
 		}()
 		go func() {
 			rm := make([]byte, kS)
 			for nr := 0; nr < kN; nr++ {
+				//b.Read(rm)
 				recv(b, rm)
 			}
 			wg.Done()
@@ -228,15 +308,7 @@ func testParallelThroughputHelper(t *testing.T, n_pipes int) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(n_pipes), elapsed), th.MemSince(sm))
-}
-
-func TestThroughput(t *testing.T) {
-	testParallelThroughputHelper(t, 1)
-}
-
-func TestParallelThroughput(t *testing.T) {
-	testParallelThroughputHelper(t, kN_GORO)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kN_PIPES), elapsed), th.MemSince(sm))
 }
 
 func testParallelChannelsHelper(dwg *sync.WaitGroup) {
@@ -262,13 +334,13 @@ func testParallelChannelsHelper(dwg *sync.WaitGroup) {
 }
 func _TestParallelChannels(t *testing.T) {
 	wg := &sync.WaitGroup{}
-	wg.Add(kN_GORO)
+	wg.Add(kN_PIPES)
 	st := time.Now()
 	sm := th.TotalAlloc()
-	for i := 0; i < kN_GORO; i++ {
+	for i := 0; i < kN_PIPES; i++ {
 		testParallelChannelsHelper(wg)
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("parallel channels time: %v, %s, mem:%s\n", elapsed, xferSpeed(kN*kN_GORO, elapsed), th.MemSince(sm))
+	fmt.Printf("parallel channels time: %v, %s, mem:%s\n", elapsed, xferSpeed(kN*kN_PIPES, elapsed), th.MemSince(sm))
 }
