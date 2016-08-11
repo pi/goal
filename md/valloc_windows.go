@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	kernelDLL         = syscall.MustLoadDLL("kernel32.dll")
-	_VirtualAllocAddr = kernelDLL.MustFindProc("VirtualAlloc").Addr()
-	_VirtualFreeAddr  = kernelDLL.MustFindProc("VirtualFree").Addr()
+	kernelDLL        = syscall.MustLoadDLL("kernel32.dll")
+	virtualAllocAddr = kernelDLL.MustFindProc("VirtualAlloc").Addr()
+	virtualFreeAddr  = kernelDLL.MustFindProc("VirtualFree").Addr()
 )
 
 const (
@@ -25,7 +25,9 @@ const (
 )
 
 func VAlloc(size uint) ([]byte, error) {
-	r0, _, e0 := syscall.Syscall6(_VirtualAllocAddr, 4, 0, uintptr(size), _MEM_RESERVE|_MEM_COMMIT, _PAGE_READWRITE, 0, 0)
+	// adjust size to page size
+	size = (size + PageSize - 1) & ^(PageSize - 1)
+	r0, _, e0 := syscall.Syscall6(virtualAllocAddr, 4, 0, uintptr(size), _MEM_RESERVE|_MEM_COMMIT, _PAGE_READWRITE, 0, 0)
 	if r0 == 0 {
 		return nil, syscall.Errno(e0)
 	}
@@ -38,7 +40,7 @@ func VAlloc(size uint) ([]byte, error) {
 }
 
 func VFree(mem []byte) error {
-	r0, _, e0 := syscall.Syscall(_VirtualFreeAddr, 3, uintptr(unsafe.Pointer(&mem[0])), 0, _MEM_RELEASE)
+	r0, _, e0 := syscall.Syscall(virtualFreeAddr, 3, uintptr(unsafe.Pointer(&mem[0])), 0, _MEM_RELEASE)
 	if r0 == 0 {
 		return syscall.Errno(e0)
 	}

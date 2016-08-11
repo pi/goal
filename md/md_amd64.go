@@ -2,4 +2,4 @@
 
 package md
 
-const PageSize = 4096
+const PageSize = uint(4096)

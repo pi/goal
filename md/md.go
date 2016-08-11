@@ -2,6 +2,7 @@ package md
 
 import (
 	"encoding/binary"
+	"time"
 	"unsafe"
 )
 
@@ -9,6 +10,9 @@ const UintSizeShift = 5 + (^uint(0) >> 63)
 const BitsPerUint = (1 << UintSizeShift)
 const BytesPerUint = BitsPerUint / 8
 const UintSizeMask = BitsPerUint - 1
+
+const BitsPerInt = BitsPerUint
+const BytesPerInt = BitsPerInt
 
 const MaxInt = int(1 << (UintSizeShift - 1))
 
@@ -53,6 +57,14 @@ func UintFromLittleEndianBytes(b []byte) uint {
 	} else {
 		return uint(binary.LittleEndian.Uint64(b))
 	}
+}
+
+//go:noescape
+func runtimeNanotime() uint64
+
+//go:linkname runtimeNanotime runtime.nanotime
+func Monotime() time.Duration {
+	return time.Duration(runtimeNanotime())
 }
 
 func init() {
