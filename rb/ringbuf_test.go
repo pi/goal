@@ -2,10 +2,11 @@ package rb
 
 import (
 	"bytes"
-	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -43,12 +44,12 @@ func TestRingBufferCap(t *testing.T) {
 		b := NewRingBuf(n)
 		require.EqualValues(t, must, b.Cap())
 	}
-	ck(0, 2)
-	ck(1, 2)
-	ck(2, 2)
-	ck(3, 4)
-	ck(4, 4)
-	ck(5, 8)
+	ck(0, defaultBufferSize)
+	ck(1, minBufferSize)
+	ck(2, minBufferSize)
+	ck(3, minBufferSize)
+	ck(4, minBufferSize)
+	ck(5, minBufferSize)
 	ck(16, 16)
 	ck(31, 32)
 	ck(32, 32)
@@ -81,6 +82,28 @@ func TestRingBufferStrings(t *testing.T) {
 	require.EqualValues(t, 0, b.ReadAvail())
 }
 
+func TestReadWrite(t *testing.T) {
+	wg := sync.WaitGroup{}
+	b := NewRingBuf(1024)
+	const N = 10000
+	wg.Add(2)
+	go func() {
+		buf := make([]byte, 300)
+		for i := 0; i < N; i++ {
+			send(b, genMsg(buf))
+		}
+		wg.Done()
+	}()
+	go func() {
+		rm := make([]byte, 300)
+		for i := 0; i < N; i++ {
+			recv(b, rm)
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+}
+
 var _ = crc32.ChecksumIEEE
 
 func psum(data []byte) (sum int) {
@@ -90,10 +113,10 @@ func psum(data []byte) (sum int) {
 	return
 }
 
-const kN = 10000
+const kN = 100000
 const kS = 32
 const kBS = kS * 1000
-const kN_PIPES = 10000
+const kN_PIPES = 1000
 
 func xferSpeed(nmsg uint64, elapsed time.Duration) string {
 	return fmt.Sprintf("mps:%.2fM, %s/s", float64(nmsg)*1000.0/float64(elapsed.Nanoseconds()), th.MemString(uint64(float64(nmsg)*kS/elapsed.Seconds())))
@@ -122,32 +145,48 @@ func writeAll(w io.Writer, data []byte) {
 	}
 }
 
-func send(w io.Writer, data []byte) {
-	if len(data) > 255 {
+func send(w io.Writer, data []byte) int {
+	if len(data) > 255-1-4 {
 		panicf("packet too long: %d", len(data))
 	}
-	var t [1]byte
-	t[0] = byte(len(data))
-	writeAll(w, t[:])
+	var l [1]byte
+	l[0] = byte(len(data))
+	writeAll(w, l[:])
 	writeAll(w, data)
-	t[0] = byte(psum(data))
-	writeAll(w, t[:])
+	var cs [4]byte
+	binary.LittleEndian.PutUint32(cs[:], crc32.ChecksumIEEE(data))
+	writeAll(w, cs[:])
+	return 1 + len(data) + 4
 }
 
-func rbsend(w *RingBuf, data []byte) {
-	if len(data) > 255 {
+func genMsg(buf []byte) []byte {
+	max := len(buf)
+	if max > 200 {
+		max = 200
+	}
+	l := rand.Int63()%int64(max) + 1
+	rand.Read(buf[:l])
+	return buf[:l]
+}
+
+func rbsend(w *RingBuf, data []byte) int {
+	if len(data) > 255-1-4 {
 		panicf("packet too long: %d", len(data))
 	}
-	var l, cs [1]byte
+	var (
+		l  [1]byte
+		cs [4]byte
+	)
 	l[0] = byte(len(data))
-	cs[0] = byte(psum(data))
+	binary.LittleEndian.PutUint32(cs[:], crc32.ChecksumIEEE(data))
 	nw, err := w.WriteChunks(l[:], data, cs[:])
-	if nw != len(data)+2 {
+	if nw != len(data)+len(l)+len(cs) {
 		panic("RingBuf.WriteChunks fail")
 	}
 	if err != nil {
 		panic(err)
 	}
+	return nw
 }
 
 func readAll(r io.Reader, buf []byte) {
@@ -170,52 +209,26 @@ func recv(r io.Reader, pkt []byte) []byte {
 	}
 	p := pkt[:pktLen]
 	readAll(r, p)
-	readAll(r, t)
-	if byte(psum(p)) != t[0] {
+	var cs [4]byte
+	readAll(r, cs[:])
+	if crc32.ChecksumIEEE(p) != binary.LittleEndian.Uint32(cs[:]) {
 		panic("checksum error")
 	}
 	return p
 }
 
-func bufferTestHelper() {
-	m := make([]byte, kS)
-	for i := 0; i < kS; i++ {
-		m[i] = byte(i + 2)
-	}
-	tb := make([]byte, kBS)
-	rm := make([]byte, kS)
-	wb := bytes.NewBuffer(tb)
-	rb := bytes.NewReader(tb)
-	for i := 0; i < kN; i++ {
-		wb.Reset()
-		send(wb, m)
-
-		rb.Seek(0, 0)
-		recv(rb, rm)
-	}
+func sendRaw(w io.Writer, buf []byte) {
+	w.Write(buf)
 }
-
-func TestBufferThroughput(t *testing.T) {
-	wg := &sync.WaitGroup{}
-	wg.Add(kN_PIPES)
-	st := time.Now()
-	sm := th.TotalAlloc()
-	for i := 0; i < kN_PIPES; i++ {
-		go func() {
-			bufferTestHelper()
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(st)
-	fmt.Printf("%v, %s, mem:%s\n", elapsed, xferSpeed(kN_PIPES*kN, elapsed), th.MemSince(sm))
+func recvRaw(r io.Reader, buf []byte) {
+	r.Read(buf)
 }
 
 func TestRing(t *testing.T) {
 	b := NewRingBuf(kBS)
 	m := make([]byte, kS)
 	rand.Read(m)
-	const N = kN * 100
+	const N = kN
 	rm := make([]byte, kS)
 	for i := 0; i < N; i++ {
 		for b.WriteAvail() < kS {
@@ -228,13 +241,13 @@ func TestRing(t *testing.T) {
 	}
 }
 
-func TestClosed(t *testing.T) {
+func TestClose(t *testing.T) {
 	b := NewRingBuf(10)
 	require.False(t, b.IsClosed())
 	b.Close()
 	require.True(t, b.IsClosed())
 	_, err := b.WriteString("t")
-	require.Equal(t, err, io.ErrClosedPipe)
+	require.Equal(t, err, io.EOF)
 	_, err = b.ReadString(10)
 	require.Equal(t, err, io.EOF)
 
@@ -255,7 +268,7 @@ func TestClosed(t *testing.T) {
 		require.Equal(t, io.EOF, err)
 		nw, err = b.WriteString("t")
 		require.EqualValues(t, nw, 0)
-		require.Equal(t, io.ErrClosedPipe, err)
+		require.Equal(t, io.EOF, err)
 	}
 
 	b.Reopen()
@@ -280,6 +293,43 @@ func TestClosed(t *testing.T) {
 	require.Equal(t, io.EOF, r.err)
 }
 
+func bufferTestHelper() {
+	m := make([]byte, kS)
+	for i := 0; i < kS; i++ {
+		m[i] = byte(i + 2)
+	}
+	tb := make([]byte, kBS)
+	rm := make([]byte, kS)
+	wb := bytes.NewBuffer(tb)
+	rb := bytes.NewReader(tb)
+	for i := 0; i < kN; i++ {
+		wb.Reset()
+		sendRaw(wb, m)
+
+		rb.Seek(0, 0)
+		recvRaw(rb, rm)
+		if rm[0] != m[0] {
+			panic("ouch")
+		}
+	}
+}
+
+func TestBufferThroughput(t *testing.T) {
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_PIPES)
+	st := time.Now()
+	sm := th.TotalAlloc()
+	for i := 0; i < kN_PIPES; i++ {
+		go func() {
+			bufferTestHelper()
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("%v, %s, mem:%s\n", elapsed, xferSpeed(kN_PIPES*kN, elapsed), th.MemSince(sm))
+}
+
 func TestParallelThroughput(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
@@ -292,16 +342,14 @@ func TestParallelThroughput(t *testing.T) {
 		b := NewRingBuf(kBS)
 		go func() {
 			for i := 0; i < kN; i++ {
-				//b.Write(m) //
-				rbsend(b, m)
+				b.Write(m)
 			}
 			wg.Done()
 		}()
 		go func() {
 			rm := make([]byte, kS)
 			for nr := 0; nr < kN; nr++ {
-				//b.Read(rm)
-				recv(b, rm)
+				b.Read(rm)
 			}
 			wg.Done()
 		}()
