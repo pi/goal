@@ -1,4 +1,4 @@
-package rb
+package pipe
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ import (
 )
 
 func TestOvercap(t *testing.T) {
-	b := New(16)
+	p := New(16)
 	m := make([]byte, 32)
 	_, err := rand.Read(m)
 	if err != nil {
@@ -26,11 +26,11 @@ func TestOvercap(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	go func() {
-		readAll(b, rm)
+		readAll(p, rm)
 		wg.Done()
 	}()
 	go func() {
-		b.Write(m)
+		p.Write(m)
 		wg.Done()
 	}()
 	wg.Wait()
@@ -41,8 +41,8 @@ func TestOvercap(t *testing.T) {
 
 func TestRingBufferCap(t *testing.T) {
 	ck := func(n uint32, must uint32) {
-		b := New(n)
-		require.EqualValues(t, must, b.Cap())
+		p := New(n)
+		require.EqualValues(t, must, p.Cap())
 	}
 	ck(0, defaultBufferSize)
 	ck(1, minBufferSize)
@@ -57,47 +57,47 @@ func TestRingBufferCap(t *testing.T) {
 
 func TestRingBufferStrings(t *testing.T) {
 	const N = 11
-	b := New(N)
-	bcap := b.Cap()
+	p := New(N)
+	bcap := p.Cap()
 	ws := func(str string) {
-		ra := int(b.ReadAvail())
-		b.WriteString(str)
-		require.EqualValues(t, ra+len(str), int(b.ReadAvail()))
+		ra := int(p.ReadAvail())
+		p.WriteString(str)
+		require.EqualValues(t, ra+len(str), int(p.ReadAvail()))
 	}
 	trs := func(str string) {
-		rs, err := b.ReadString(len(str))
+		rs, err := p.ReadString(len(str))
 		require.NoError(t, err)
 		require.EqualValues(t, len(str), len(rs))
 		require.EqualValues(t, str, rs)
 	}
 	ws("hello")
 	ws("olleh")
-	require.EqualValues(t, bcap-10, b.WriteAvail())
+	require.EqualValues(t, bcap-10, p.WriteAvail())
 	trs("hello")
-	require.EqualValues(t, 5, b.ReadAvail())
+	require.EqualValues(t, 5, p.ReadAvail())
 	ws("tst")
-	require.EqualValues(t, 8, b.ReadAvail())
+	require.EqualValues(t, 8, p.ReadAvail())
 	trs("olleh")
 	trs("tst")
-	require.EqualValues(t, 0, b.ReadAvail())
+	require.EqualValues(t, 0, p.ReadAvail())
 }
 
 func TestReadWrite(t *testing.T) {
 	wg := sync.WaitGroup{}
-	b := New(1024)
+	p := New(1024)
 	const N = 10000
 	wg.Add(2)
 	go func() {
 		buf := make([]byte, 300)
 		for i := 0; i < N; i++ {
-			send(b, genMsg(buf))
+			send(p, genMsg(buf))
 		}
 		wg.Done()
 	}()
 	go func() {
 		rm := make([]byte, 300)
 		for i := 0; i < N; i++ {
-			recv(b, rm)
+			recv(p, rm)
 		}
 		wg.Done()
 	}()
@@ -107,8 +107,8 @@ func TestReadWrite(t *testing.T) {
 var _ = crc32.ChecksumIEEE
 
 func psum(data []byte) (sum int) {
-	for _, b := range data {
-		sum += int(b)
+	for _, p := range data {
+		sum += int(p)
 	}
 	return
 }
@@ -169,7 +169,7 @@ func genMsg(buf []byte) []byte {
 	return buf[:l]
 }
 
-func rbsend(w *RingBuf, data []byte) int {
+func rbsend(w *Pipe, data []byte) int {
 	if len(data) > 255-1-4 {
 		panicf("packet too long: %d", len(data))
 	}
@@ -225,53 +225,53 @@ func recvRaw(r io.Reader, buf []byte) {
 }
 
 func TestRing(t *testing.T) {
-	b := New(kBS)
+	p := New(kBS)
 	m := make([]byte, kS)
 	rand.Read(m)
 	const N = kN
 	rm := make([]byte, kS)
 	for i := 0; i < N; i++ {
-		for b.WriteAvail() < kS {
-			recv(b, rm)
+		for p.WriteAvail() < kS {
+			recv(p, rm)
 		}
-		send(b, m)
+		send(p, m)
 	}
-	for b.ReadAvail() > 0 {
-		recv(b, rm)
+	for p.ReadAvail() > 0 {
+		recv(p, rm)
 	}
 }
 
 func TestClose(t *testing.T) {
-	b := New(10)
-	require.False(t, b.IsClosed())
-	b.Close()
-	require.True(t, b.IsClosed())
-	_, err := b.WriteString("t")
+	p := New(10)
+	require.False(t, p.IsClosed())
+	p.Close()
+	require.True(t, p.IsClosed())
+	_, err := p.WriteString("t")
 	require.Equal(t, err, io.EOF)
-	_, err = b.ReadString(10)
+	_, err = p.ReadString(10)
 	require.Equal(t, err, io.EOF)
 
-	b.Reopen()
-	require.False(t, b.IsClosed())
+	p.Reopen()
+	require.False(t, p.IsClosed())
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	b.WriteString("t")
-	b.Close()
+	p.WriteString("t")
+	p.Close()
 	{
 		var err error
 		var s string
 		var nw int
 
-		s, err = b.ReadString(2)
+		s, err = p.ReadString(2)
 		require.Equal(t, s, "t")
 		require.Equal(t, io.EOF, err)
-		nw, err = b.WriteString("t")
+		nw, err = p.WriteString("t")
 		require.EqualValues(t, nw, 0)
 		require.Equal(t, io.EOF, err)
 	}
 
-	b.Reopen()
+	p.Reopen()
 	type res struct {
 		m   []byte
 		n   int
@@ -280,12 +280,12 @@ func TestClose(t *testing.T) {
 	c := make(chan res)
 	go func() {
 		m := make([]byte, 10)
-		n, err := b.Read(m)
+		n, err := p.Read(m)
 		c <- res{m, n, err}
 	}()
 	go func() {
-		b.Write([]byte{0xFE})
-		b.Close()
+		p.Write([]byte{0xFE})
+		p.Close()
 	}()
 	r := <-c
 	require.EqualValues(t, r.n, 1)
