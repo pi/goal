@@ -65,12 +65,12 @@ func minDuration(d1, d2, d3 time.Duration) time.Duration {
 }
 
 type RingBuf struct {
-	headAndSize uint64 // highest bit - close flag
+	headAndSize uint64 // highest bit - close flag. next 31 bits: read pos, next lower 32 bits: read avail (only lower 31 bits is used)
 	mem         []byte
 	mask        uint32
 }
 
-func NewRingBuf(max uint32) *RingBuf {
+func New(max uint32) *RingBuf {
 	if max == 0 {
 		max = defaultBufferSize
 	} else if max < minBufferSize {
@@ -79,12 +79,26 @@ func NewRingBuf(max uint32) *RingBuf {
 		// round up to power of two
 		max = 1 << gut.BitLen(uint(max))
 	}
-	if max > low31bits {
+	if max > (low31bits + 1) {
 		panic("RingBuffer size too large")
 	}
 	return &RingBuf{
 		mem:  make([]byte, int(max)),
 		mask: max - 1,
+	}
+}
+
+func With(buf []byte) *RingBuf {
+	max := uint(len(buf))
+	if (max & (max - 1)) != 0 {
+		panic("buffer size must be power of two")
+	}
+	if max > uint(low31bits)+1 {
+		panic("Buffer size too large")
+	}
+	return &RingBuf{
+		mem:  buf,
+		mask: uint32(max) - 1,
 	}
 }
 
@@ -392,7 +406,7 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 	toWrite := uint32(len(data))
 	sleepTime := initialSleepTime
 	for written < toWrite {
-		hs, closed, head, sz := b.loadHeader()
+		_, closed, head, sz := b.loadHeader()
 		if closed {
 			return int(written), io.EOF
 		}
@@ -417,13 +431,14 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 			copy(b.mem[writePos:writePos+nw], data[written:written+nw])
 		}
 		written += nw
-		for {
+		atomic.AddUint64(&b.headAndSize, uint64(nw))
+		/*for {
 			if atomic.CompareAndSwapUint64(&b.headAndSize, hs, hs+uint64(nw)) {
 				break
 			}
 			runtime.Gosched()
 			hs = atomic.LoadUint64(&b.headAndSize)
-		}
+		}*/
 	}
 	return int(written), nil
 }

@@ -16,7 +16,7 @@ import (
 )
 
 func TestOvercap(t *testing.T) {
-	b := NewRingBuf(16)
+	b := New(16)
 	m := make([]byte, 32)
 	_, err := rand.Read(m)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestOvercap(t *testing.T) {
 
 func TestRingBufferCap(t *testing.T) {
 	ck := func(n uint32, must uint32) {
-		b := NewRingBuf(n)
+		b := New(n)
 		require.EqualValues(t, must, b.Cap())
 	}
 	ck(0, defaultBufferSize)
@@ -57,7 +57,7 @@ func TestRingBufferCap(t *testing.T) {
 
 func TestRingBufferStrings(t *testing.T) {
 	const N = 11
-	b := NewRingBuf(N)
+	b := New(N)
 	bcap := b.Cap()
 	ws := func(str string) {
 		ra := int(b.ReadAvail())
@@ -84,7 +84,7 @@ func TestRingBufferStrings(t *testing.T) {
 
 func TestReadWrite(t *testing.T) {
 	wg := sync.WaitGroup{}
-	b := NewRingBuf(1024)
+	b := New(1024)
 	const N = 10000
 	wg.Add(2)
 	go func() {
@@ -225,7 +225,7 @@ func recvRaw(r io.Reader, buf []byte) {
 }
 
 func TestRing(t *testing.T) {
-	b := NewRingBuf(kBS)
+	b := New(kBS)
 	m := make([]byte, kS)
 	rand.Read(m)
 	const N = kN
@@ -242,7 +242,7 @@ func TestRing(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
-	b := NewRingBuf(10)
+	b := New(10)
 	require.False(t, b.IsClosed())
 	b.Close()
 	require.True(t, b.IsClosed())
@@ -339,7 +339,7 @@ func TestParallelThroughput(t *testing.T) {
 
 	sm := th.TotalAlloc()
 	for i := 0; i < kN_PIPES; i++ {
-		b := NewRingBuf(kBS)
+		b := New(kBS)
 		go func() {
 			for i := 0; i < kN; i++ {
 				b.Write(m)
