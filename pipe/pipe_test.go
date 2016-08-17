@@ -15,32 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestOvercap(t *testing.T) {
-	p := New(16)
-	m := make([]byte, 32)
-	_, err := rand.Read(m)
-	if err != nil {
-		panic("rand.Read error " + err.Error())
-	}
-	rm := make([]byte, 32)
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	go func() {
-		readAll(p, rm)
-		wg.Done()
-	}()
-	go func() {
-		p.Write(m)
-		wg.Done()
-	}()
-	wg.Wait()
-	if crc32.ChecksumIEEE(m) != crc32.ChecksumIEEE(rm) {
-		t.Fatal("crc mismatch")
-	}
-}
-
-func TestRingBufferCap(t *testing.T) {
-	ck := func(n uint32, must uint32) {
+func TestCap(t *testing.T) {
+	ck := func(n int, must int) {
 		p := New(n)
 		require.EqualValues(t, must, p.Cap())
 	}
@@ -55,7 +31,7 @@ func TestRingBufferCap(t *testing.T) {
 	ck(32, 32)
 }
 
-func TestRingBufferStrings(t *testing.T) {
+func TestStrings(t *testing.T) {
 	const N = 11
 	p := New(N)
 	bcap := p.Cap()
@@ -82,10 +58,27 @@ func TestRingBufferStrings(t *testing.T) {
 	require.EqualValues(t, 0, p.ReadAvail())
 }
 
+func TestRing(t *testing.T) {
+	p := New(kBS)
+	m := make([]byte, kS)
+	rand.Read(m)
+	const N = kN
+	rm := make([]byte, kS)
+	for i := 0; i < N; i++ {
+		for p.WriteAvail() < kS {
+			recv(p, rm)
+		}
+		send(p, m)
+	}
+	for p.ReadAvail() > 0 {
+		recv(p, rm)
+	}
+}
+
 func TestReadWrite(t *testing.T) {
 	wg := sync.WaitGroup{}
 	p := New(1024)
-	const N = 10000
+	const N = 2000
 	wg.Add(2)
 	go func() {
 		buf := make([]byte, 300)
@@ -104,7 +97,114 @@ func TestReadWrite(t *testing.T) {
 	wg.Wait()
 }
 
-var _ = crc32.ChecksumIEEE
+func TestParallelWrite(t *testing.T) {
+	const kN_PIPES = 100
+	wg := sync.WaitGroup{}
+	p := New(kBS * kN_PIPES)
+
+	st := time.Now()
+	sm := th.TotalAlloc()
+	wg.Add(1)
+	go func() {
+		rm := make([]byte, kS)
+		for i := 0; i < kN*kN_PIPES; i++ {
+			n, err := p.Read(rm)
+			require.EqualValues(t, n, kS)
+			require.NoError(t, err)
+		}
+		wg.Done()
+	}()
+
+	for i := 0; i < kN_PIPES; i++ {
+		wg.Add(1)
+		go func() {
+			m := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				p.Write(m)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*kN_PIPES, elapsed), th.MemSince(sm))
+}
+
+func TestOvercap(t *testing.T) {
+	p := New(16)
+	m := make([]byte, 32)
+	_, err := rand.Read(m)
+	if err != nil {
+		panic("rand.Read error " + err.Error())
+	}
+	rm := make([]byte, 32)
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		readAll(p, rm)
+		wg.Done()
+	}()
+	go func() {
+		p.Write(m)
+		wg.Done()
+	}()
+	wg.Wait()
+	if crc32.ChecksumIEEE(m) != crc32.ChecksumIEEE(rm) {
+		t.Fatal("crc mismatch")
+	}
+}
+
+func TestClose(t *testing.T) {
+	p := New(10)
+	require.False(t, p.IsClosed())
+	p.Close()
+	require.True(t, p.IsClosed())
+	_, err := p.WriteString("t")
+	require.Equal(t, err, io.EOF)
+	_, err = p.ReadString(10)
+	require.Equal(t, err, io.EOF)
+
+	p.Reopen()
+	require.False(t, p.IsClosed())
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	p.WriteString("t")
+	p.Close()
+	{
+		var err error
+		var s string
+		var nw int
+
+		s, err = p.ReadString(2)
+		require.Equal(t, s, "t")
+		require.Equal(t, io.EOF, err)
+		nw, err = p.WriteString("t")
+		require.EqualValues(t, nw, 0)
+		require.Equal(t, io.EOF, err)
+	}
+
+	p.Reopen()
+	type res struct {
+		m   []byte
+		n   int
+		err error
+	}
+	c := make(chan res)
+	go func() {
+		m := make([]byte, 10)
+		n, err := p.Read(m)
+		c <- res{m, n, err}
+	}()
+	go func() {
+		p.Write([]byte{0xFE})
+		p.Close()
+	}()
+	r := <-c
+	require.EqualValues(t, r.n, 1)
+	require.EqualValues(t, r.m[0], 0xFE)
+	require.Equal(t, io.EOF, r.err)
+}
 
 func psum(data []byte) (sum int) {
 	for _, p := range data {
@@ -222,75 +322,6 @@ func sendRaw(w io.Writer, buf []byte) {
 }
 func recvRaw(r io.Reader, buf []byte) {
 	r.Read(buf)
-}
-
-func TestRing(t *testing.T) {
-	p := New(kBS)
-	m := make([]byte, kS)
-	rand.Read(m)
-	const N = kN
-	rm := make([]byte, kS)
-	for i := 0; i < N; i++ {
-		for p.WriteAvail() < kS {
-			recv(p, rm)
-		}
-		send(p, m)
-	}
-	for p.ReadAvail() > 0 {
-		recv(p, rm)
-	}
-}
-
-func TestClose(t *testing.T) {
-	p := New(10)
-	require.False(t, p.IsClosed())
-	p.Close()
-	require.True(t, p.IsClosed())
-	_, err := p.WriteString("t")
-	require.Equal(t, err, io.EOF)
-	_, err = p.ReadString(10)
-	require.Equal(t, err, io.EOF)
-
-	p.Reopen()
-	require.False(t, p.IsClosed())
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	p.WriteString("t")
-	p.Close()
-	{
-		var err error
-		var s string
-		var nw int
-
-		s, err = p.ReadString(2)
-		require.Equal(t, s, "t")
-		require.Equal(t, io.EOF, err)
-		nw, err = p.WriteString("t")
-		require.EqualValues(t, nw, 0)
-		require.Equal(t, io.EOF, err)
-	}
-
-	p.Reopen()
-	type res struct {
-		m   []byte
-		n   int
-		err error
-	}
-	c := make(chan res)
-	go func() {
-		m := make([]byte, 10)
-		n, err := p.Read(m)
-		c <- res{m, n, err}
-	}()
-	go func() {
-		p.Write([]byte{0xFE})
-		p.Close()
-	}()
-	r := <-c
-	require.EqualValues(t, r.n, 1)
-	require.EqualValues(t, r.m[0], 0xFE)
-	require.Equal(t, io.EOF, r.err)
 }
 
 func bufferTestHelper() {
