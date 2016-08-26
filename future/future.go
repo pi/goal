@@ -77,7 +77,7 @@ func (f *Future) runParallel() {
 }
 
 func (f *Future) Go() *Future {
-	if f.c != nil && !f.isDone() {
+	if f.c != nil && !f.IsDone() {
 		panic("Go called on running future")
 	}
 	f.err = nil
@@ -87,7 +87,7 @@ func (f *Future) Go() *Future {
 }
 
 func (f *Future) GoParallel() *Future {
-	if f.c != nil && !f.isDone() {
+	if f.c != nil && !f.IsDone() {
 		panic("GoParallel called on running future")
 	}
 	f.err = nil
@@ -117,7 +117,7 @@ func (f *Future) Result() interface{} {
 	return f.result
 }
 
-func (f *Future) isDone() bool {
+func (f *Future) IsDone() bool {
 	if f.c == nil {
 		panic("isDone called on uniniitalized future")
 	}
@@ -129,15 +129,15 @@ func (f *Future) isDone() bool {
 	}
 }
 
-func (f *Future) IsReady() bool {
+func (f *Future) IsComplete() bool {
 	if f.c == nil {
 		f.Go()
 	}
-	return f.isDone()
+	return f.IsDone()
 }
 
 func (f *Future) TimedWait(timeout time.Duration) (bool, error) {
-	if f.IsReady() {
+	if f.IsComplete() {
 		return true, f.err
 	}
 	select {
@@ -181,4 +181,10 @@ func (f *Future) Done() chan struct{} {
 		f.Go()
 	}
 	return f.c
+}
+
+func (f *Future) Cancel() {
+	if f.c != nil {
+		close(f.c)
+	}
 }
