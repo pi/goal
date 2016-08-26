@@ -156,7 +156,7 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 	for written < toWrite {
 		_, closed, head, sz := b.loadHeader()
 		if closed {
-			return 0, io.EOF
+			return written, io.EOF
 		}
 		nw := minInt(b.Cap()-sz, toWrite-written)
 		if nw > 0 {
