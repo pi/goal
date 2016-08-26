@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,8 +15,6 @@ func TestPipeConn(t *testing.T) {
 	const kN = 100000
 	const kS = 32
 	const kBS = kS * 1000*/
-
-	var rst, wst uint64
 
 	wg := sync.WaitGroup{}
 
@@ -35,9 +32,6 @@ func TestPipeConn(t *testing.T) {
 				c.Write(m)
 				c.Read(rm)
 			}
-			p := c.(*pipeConn)
-			atomic.AddUint64(&rst, uint64(p.rp.rst))
-			atomic.AddUint64(&wst, uint64(p.wp.wst))
 			wg.Done()
 		}(cliConn)
 
@@ -47,16 +41,12 @@ func TestPipeConn(t *testing.T) {
 				c.Read(m)
 				c.Write(m)
 			}
-			p := c.(*pipeConn)
-			atomic.AddUint64(&rst, uint64(p.rp.rst))
-			atomic.AddUint64(&wst, uint64(p.wp.wst))
 			wg.Done()
 		}(srvConn)
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
 	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, xferSpeed(kNPIPES*kN*2, elapsed), th.MemSince(sm))
-	fmt.Printf("rst:%v wst:%v\n", (time.Duration)(rst), (time.Duration)(wst))
 }
 
 func TestPipeConnProducerConsumer(t *testing.T) {

@@ -5,8 +5,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/pi/goal/md"
 )
 
 type pipeAddr int
@@ -16,9 +14,7 @@ func (a pipeAddr) String() string  { return "pipe" }
 
 type pipeConn struct {
 	rp, wp *Pipe
-	rmux   sync.Mutex
-	rsig   chan struct{}
-	wsig   chan struct{}
+	rlock  sync.Mutex
 }
 
 func (c *pipeConn) LocalAddr() net.Addr {
@@ -46,7 +42,6 @@ func (c *pipeConn) SetDeadline(deadline time.Time) error {
 }
 
 func (c *pipeConn) Close() error {
-	close(c.rsig)
 	err1 := c.rp.Close()
 	err := c.wp.Close()
 	if err == nil {
@@ -56,50 +51,24 @@ func (c *pipeConn) Close() error {
 }
 
 func (c *pipeConn) Read(buf []byte) (int, error) {
-	if c.rp.readDeadline == 0 {
-		<-c.rsig
-	} else {
-		dl := c.rp.readDeadline - md.Monotime()
-		select {
-		case <-c.rsig:
-		case <-time.After(dl):
-			return 0, ErrTimeout
-		}
-	}
-	n, err := c.rp.Read(buf)
-	if c.rp.ReadAvail() > 0 {
-		select {
-		case c.rsig <- struct{}{}:
-		default:
-		}
-	}
-	return n, err
+	c.rlock.Lock()
+	defer c.rlock.Unlock()
+	return c.rp.Read(buf)
 }
 
 func (c *pipeConn) Write(buf []byte) (int, error) {
-	n, err := c.wp.Write(buf)
-	select {
-	case c.wsig <- struct{}{}:
-	default:
-	}
-	return n, err
+	return c.wp.Write(buf)
 }
 
 func Conn(bufSize int) (net.Conn, net.Conn) {
 	p1 := New(bufSize)
 	p2 := New(bufSize)
-	s1 := make(chan struct{}, 1)
-	s2 := make(chan struct{}, 1)
 	return &pipeConn{
-			rp:   p1,
-			wp:   p2,
-			rsig: s1,
-			wsig: s2,
+			rp: p1,
+			wp: p2,
 		},
 		&pipeConn{
-			rp:   p2,
-			wp:   p1,
-			rsig: s2,
-			wsig: s1,
+			rp: p2,
+			wp: p1,
 		}
 }

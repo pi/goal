@@ -43,8 +43,7 @@ type Pipe struct {
 	mask          int
 	readDeadline  time.Duration
 	writeDeadline time.Duration
-
-	rst, wst time.Duration
+	wsig, rsig    chan struct{}
 }
 
 const low63bits = ^uint64(0) >> 1
@@ -127,6 +126,15 @@ func With(buf []byte) *Pipe {
 	return &Pipe{
 		mem:  buf,
 		mask: max - 1,
+		wsig: make(chan struct{}, 1),
+		rsig: make(chan struct{}, 1),
+	}
+}
+
+func notify(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
 	}
 }
 
@@ -134,7 +142,7 @@ func (p *Pipe) SetReadDeadline(deadline time.Time) {
 	if deadline.IsZero() {
 		p.readDeadline = 0
 	} else {
-		p.readDeadline = deadline.Sub(time.Now())
+		p.readDeadline = md.Monotime() + deadline.Sub(time.Now())
 	}
 }
 
@@ -142,13 +150,35 @@ func (p *Pipe) SetWriteDeadline(deadline time.Time) {
 	if deadline.IsZero() {
 		p.writeDeadline = 0
 	} else {
-		p.writeDeadline = deadline.Sub(time.Now())
+		p.writeDeadline = md.Monotime() + deadline.Sub(time.Now())
 	}
 }
 
 func (p *Pipe) SetDeadline(deadline time.Time) {
 	p.SetReadDeadline(deadline)
 	p.writeDeadline = p.readDeadline
+}
+
+func getDeadlineTime(deadline time.Duration) time.Time {
+	if deadline == time.Duration(0) {
+		return time.Time{}
+	} else {
+		return time.Now().Add(deadline - md.Monotime())
+	}
+}
+
+func (p *Pipe) ReadDeadline() time.Time {
+	return getDeadlineTime(p.readDeadline)
+}
+
+func (p *Pipe) WriteDeadline() time.Time {
+	return getDeadlineTime(p.writeDeadline)
+}
+
+func (p *Pipe) Deadline() (readDeadline, writeDeadline time.Time) {
+	readDeadline = getDeadlineTime(p.readDeadline)
+	writeDeadline = getDeadlineTime(p.writeDeadline)
+	return
 }
 
 func minInt(a, b int) int {
@@ -174,11 +204,15 @@ func (p *Pipe) Close() error {
 		}
 		runtime.Gosched()
 	}
+	close(p.rsig)
+	close(p.wsig)
 	return nil
 }
 
 func (p *Pipe) Reopen() {
 	atomic.StoreUint64(&p.bits, 0) // reset close flag, head and size
+	p.rsig = make(chan struct{}, 1)
+	p.wsig = make(chan struct{}, 1)
 }
 
 func (p *Pipe) IsClosed() bool {
@@ -209,7 +243,6 @@ func (p *Pipe) WriteByte(c byte) error {
 func (p *Pipe) Read(data []byte) (int, error) {
 	readed := 0
 	toRead := len(data)
-	sleepTime := initialSleepTime
 	for {
 		hs, closed, head, sz := p.loadHeader()
 		if sz > 0 {
@@ -233,30 +266,29 @@ func (p *Pipe) Read(data []byte) (int, error) {
 				hs, closed, head, sz = p.loadHeader()
 			}
 			readed += nr
+			notify(p.rsig)
 			if readed == toRead {
 				return readed, nil
 			}
-			sleepTime = initialSleepTime // reset sleep time
 		} else {
 			if closed {
 				return readed, io.EOF
 			}
 			if p.readDeadline == 0 {
-				if sleepTime < maxSleepTime {
-					sleepTime *= 2
-				}
+				<-p.wsig
 			} else {
-				remainingTime := p.readDeadline - md.Monotime()
-				if remainingTime < time.Microsecond {
+				remainTime := p.readDeadline - md.Monotime()
+				if remainTime < time.Microsecond {
 					return readed, ErrTimeout
 				}
-				sleepTime = minDuration(sleepTime*2, remainingTime, maxSleepTime)
+				select {
+				case <-p.wsig:
+				case <-time.After(remainTime):
+					return readed, ErrTimeout
+				}
 			}
-			time.Sleep(sleepTime)
-			p.rst += sleepTime
 		}
 	}
-	return readed, nil
 }
 
 // Peek for avialable data. ReadTimeout is not used, close flag is not handled
@@ -298,7 +330,6 @@ func (p *Pipe) ReadWait(min int) (bool, error) {
 		return false, ErrTimeout
 	}
 
-	sleepTime := initialSleepTime
 	for {
 		_, closed, _, sz := p.loadHeader()
 		if sz >= min {
@@ -312,17 +343,18 @@ func (p *Pipe) ReadWait(min int) (bool, error) {
 			return false, io.EOF
 		}
 		if p.readDeadline == 0 {
-			if sleepTime < maxSleepTime {
-				sleepTime *= 2
-			}
+			<-p.wsig
 		} else {
-			remainingTime := p.readDeadline - md.Monotime()
-			if remainingTime < time.Microsecond {
+			remainTime := p.readDeadline - md.Monotime()
+			if remainTime < time.Microsecond {
 				return false, ErrTimeout
 			}
-			sleepTime = minDuration(sleepTime*2, remainingTime, maxSleepTime)
+			select {
+			case <-p.wsig:
+			case <-time.After(remainTime):
+				return false, ErrTimeout
+			}
 		}
-		time.Sleep(sleepTime)
 	}
 }
 
@@ -336,10 +368,11 @@ func (p *Pipe) Skip(toSkip int) (int, error) {
 		return 0, nil
 	}
 	skipped := 0
-	sleepTime := initialSleepTime
+	notified := false
 	for skipped < toSkip {
 		hs, closed, head, sz := p.loadHeader()
 		if sz > 0 {
+			notified = false
 			n := minInt(toSkip-skipped, sz)
 			skipped += n
 			for {
@@ -351,24 +384,31 @@ func (p *Pipe) Skip(toSkip int) (int, error) {
 				runtime.Gosched()
 				hs, closed, head, sz = p.loadHeader()
 			}
-			sleepTime = initialSleepTime // reset sleep time
 		} else {
+			if !notified {
+				notify(p.rsig)
+				notified = true
+			}
 			if closed {
 				return skipped, io.EOF
 			}
 			if p.readDeadline == 0 {
-				if sleepTime < maxSleepTime {
-					sleepTime *= 2
-				}
+				<-p.wsig
 			} else {
-				remainingTime := p.readDeadline - md.Monotime()
-				if remainingTime < time.Microsecond {
+				remainTime := p.readDeadline - md.Monotime()
+				if remainTime < time.Microsecond {
 					return skipped, ErrTimeout
 				}
-				sleepTime = minDuration(sleepTime*2, remainingTime, maxSleepTime)
+				select {
+				case <-p.wsig:
+				case <-time.After(remainTime):
+					return skipped, ErrTimeout
+				}
 			}
-			time.Sleep(sleepTime)
 		}
+	}
+	if !notified {
+		notify(p.rsig)
 	}
 	return skipped, nil
 }
@@ -398,25 +438,25 @@ func (p *Pipe) Cap() int {
 	return len(p.mem)
 }
 
-func (p *Pipe) writeLock() {
-	// first spin some
-	for i := 0; i < spinCycles; i++ {
-		hs := atomic.LoadUint64(&p.bits)
-		if ((hs & wlockFlag) == 0) && atomic.CompareAndSwapUint64(&p.bits, hs, hs|wlockFlag) {
-			return
-		}
-		time.Sleep(time.Microsecond)
-	}
-	sleepTime := initialSleepTime
+func (p *Pipe) writeLock() bool {
 	for {
 		hs := atomic.LoadUint64(&p.bits)
 		if ((hs & wlockFlag) == 0) && atomic.CompareAndSwapUint64(&p.bits, hs, hs|wlockFlag) {
-			return
+			return true
 		}
-		if sleepTime < maxSleepTime {
-			sleepTime *= 2
+		if p.writeDeadline == 0 {
+			<-p.wsig
+		} else {
+			remainTime := p.writeDeadline - md.Monotime()
+			if remainTime < time.Microsecond {
+				return false
+			}
+			select {
+			case <-p.wsig:
+			case <-time.After(remainTime):
+				return false
+			}
 		}
-		time.Sleep(sleepTime)
 	}
 }
 
@@ -427,6 +467,7 @@ func (p *Pipe) writeUnlock() {
 		}
 	}
 	atomic.AddUint64(&p.bits, negWlockFlag)
+	notify(p.wsig)
 }
 
 // Write writes bytes to buffer. Function return when all bytes written or timeout expired
@@ -445,13 +486,13 @@ func (p *Pipe) write(data []byte, alreadyLocked bool) (int, error) {
 	}
 
 	written := 0
-	sleepTime := initialSleepTime
 	locked := alreadyLocked
 	for {
 		hs, closed, head, sz := p.loadHeader()
 		if closed {
 			if locked && !alreadyLocked {
 				atomic.AddUint64(&p.bits, negWlockFlag)
+				notify(p.wsig)
 			}
 			return written, io.EOF
 		}
@@ -475,30 +516,51 @@ func (p *Pipe) write(data []byte, alreadyLocked bool) (int, error) {
 				written += nw
 				atomic.AddUint64(&p.bits, uint64(nw))
 				if written == toWrite {
-					atomic.AddUint64(&p.bits, negWlockFlag)
+					if !alreadyLocked {
+						atomic.AddUint64(&p.bits, negWlockFlag)
+					}
+					notify(p.wsig) // for reader and writers
 					return written, nil
 				}
-				sleepTime = initialSleepTime // reset sleep time
-				// fallback to sleep because there is no enough space to write
-			}
-		}
-
-		if p.writeDeadline == 0 {
-			if sleepTime < maxSleepTime {
-				sleepTime *= 2
+				notify(p.wsig) // for reader
+			} else {
+				if p.writeDeadline == 0 {
+					<-p.rsig
+				} else {
+					remainTime := p.writeDeadline - md.Monotime()
+					if remainTime < time.Microsecond {
+						if !alreadyLocked {
+							atomic.AddUint64(&p.bits, negWlockFlag)
+							notify(p.wsig) // for writers
+						}
+						return written, ErrTimeout
+					}
+					select {
+					case <-p.rsig:
+					case <-time.After(remainTime):
+						if !alreadyLocked {
+							atomic.AddUint64(&p.bits, negWlockFlag)
+							notify(p.wsig)
+						}
+						return written, ErrTimeout
+					}
+				}
 			}
 		} else {
-			remainTime := p.writeDeadline - md.Monotime()
-			if remainTime < time.Microsecond {
-				if locked && !alreadyLocked {
-					atomic.AddUint64(&p.bits, negWlockFlag)
+			if p.writeDeadline == 0 {
+				<-p.wsig
+			} else {
+				remainTime := p.writeDeadline - md.Monotime()
+				if remainTime < time.Microsecond {
+					return written, ErrTimeout
 				}
-				return written, ErrTimeout
+				select {
+				case <-p.wsig:
+				case <-time.After(remainTime):
+					return written, ErrTimeout
+				}
 			}
-			sleepTime = minDuration(sleepTime*2, maxSleepTime, remainTime)
 		}
-		time.Sleep(sleepTime)
-		p.wst += sleepTime
 	}
 }
 
@@ -516,72 +578,63 @@ func (p *Pipe) Write(data []byte) (int, error) {
 //		io.EOF if pipe was closed
 //		ErrTimeout if write deadline is reached
 func (p *Pipe) WriteAll(chunks ...[]byte) (int64, error) {
+	locked := p.writeLock()
+	if !locked {
+		return 0, ErrTimeout
+	}
+	defer p.writeUnlock()
+
 	var totalWritten int64
 
-	sleepTime := initialSleepTime
-	locked := false
 	for _, data := range chunks {
 		written := 0
 		toWrite := len(data)
 		for written < toWrite {
-			hs, closed, head, sz := p.loadHeader()
+			_, closed, head, sz := p.loadHeader()
 			if closed {
-				if locked {
-					atomic.AddUint64(&p.bits, negWlockFlag)
-				}
 				return totalWritten, io.EOF
 			}
-			if !locked && ((hs & wlockFlag) == 0) {
-				locked = atomic.CompareAndSwapUint64(&p.bits, hs, hs|wlockFlag)
-			}
-			if locked {
-				nw := minInt(p.Cap()-sz, toWrite-written)
-				if nw > 0 {
-					sleepTime = initialSleepTime // reset sleep time
-					writePos := (head + sz) & p.mask
-					if writePos > p.Cap()-nw {
-						// wrapped
-						ll := p.Cap() - writePos
-						copy(p.mem[writePos:], data[written:written+ll])
-						copy(p.mem[:nw-ll], data[written+ll:written+nw])
-					} else {
-						copy(p.mem[writePos:writePos+nw], data[written:written+nw])
-					}
-					written += nw
-					atomic.AddUint64(&p.bits, uint64(nw))
+			nw := minInt(p.Cap()-sz, toWrite-written)
+			if nw > 0 {
+				writePos := (head + sz) & p.mask
+				if writePos > p.Cap()-nw {
+					// wrapped
+					ll := p.Cap() - writePos
+					copy(p.mem[writePos:], data[written:written+ll])
+					copy(p.mem[:nw-ll], data[written+ll:written+nw])
+				} else {
+					copy(p.mem[writePos:writePos+nw], data[written:written+nw])
 				}
-			}
-			if written < toWrite {
+				written += nw
+				totalWritten += int64(nw)
+				atomic.AddUint64(&p.bits, uint64(nw))
+				notify(p.wsig)
+			} else {
 				if p.writeDeadline == 0 {
-					if sleepTime < maxSleepTime {
-						sleepTime *= 2
-					}
+					<-p.rsig
 				} else {
 					remainTime := p.writeDeadline - md.Monotime()
 					if remainTime < time.Microsecond {
-						if locked {
-							atomic.AddUint64(&p.bits, negWlockFlag)
-						}
-						return totalWritten + int64(written), ErrTimeout
+						return totalWritten, ErrTimeout
 					}
-					sleepTime = minDuration(sleepTime*2, maxSleepTime, remainTime)
+					select {
+					case <-p.rsig:
+					case <-time.After(remainTime):
+						return totalWritten, ErrTimeout
+					}
 				}
-				time.Sleep(sleepTime)
 			}
 		}
-		totalWritten += int64(written)
-	}
-	if locked {
-		atomic.AddUint64(&p.bits, negWlockFlag)
 	}
 	return totalWritten, nil
 }
 
 // ReadFrom see io.ReaderFrom
 func (p *Pipe) ReadFrom(r io.Reader) (n int64, err error) {
-	chunk := make([]byte, 8192)
 	p.writeLock()
 	defer p.writeUnlock()
+
+	chunk := make([]byte, 8192)
 	for {
 		readed, err := r.Read(chunk)
 		if readed > 0 {
