@@ -12,16 +12,16 @@ const BytesPerUint = BitsPerUint / 8
 const UintSizeMask = BitsPerUint - 1
 
 const BitsPerInt = BitsPerUint
-const BytesPerInt = BitsPerInt
+const BytesPerInt = BytesPerUint
+const IntSizeMask = UintSizeMask
 
 const MaxInt = int(1 << (UintSizeShift - 1))
+const MinInt = MaxInt+1
 
-const MinExactFloatInt = -18014398509481984 // int(^(uint(1) << 54)) + 1
-const MaxExactFloatInt = 18014398509481984  // int(1 << uint(54))
+const MinExactFloat64Int = -18014398509481984 // int(^(uint(1) << 54)) + 1
+const MaxExactFloat64Int = 18014398509481984  // int(1 << uint(54))
 
 var (
-	IsBigEndian    bool
-	IsLittleEndian bool
 	NativeEndian   binary.ByteOrder
 )
 
@@ -43,7 +43,7 @@ func UintFromBytes(b []byte) uint {
 
 // UintToLittleEndianBytes puts 64-bit unsigned integer to bytes in little-endian order
 func UintToLittleEndianBytes(v uint, b []byte) {
-	if IsLittleEndian {
+	if LittleEndian {
 		UintToBytes(v, b)
 	} else {
 		binary.LittleEndian.PutUint64(b, uint64(v))
@@ -52,7 +52,7 @@ func UintToLittleEndianBytes(v uint, b []byte) {
 
 // UintFromLittleEndianBytes extracts 64-bit unsigned integer from bytes in little-endian order
 func UintFromLittleEndianBytes(b []byte) uint {
-	if IsLittleEndian {
+	if LittleEndian {
 		return UintFromBytes(b)
 	} else {
 		return uint(binary.LittleEndian.Uint64(b))
@@ -72,11 +72,7 @@ func init() {
 		panic("64-bit system required")
 	}
 
-	var buf [8]byte
-	*(*uint)(unsafe.Pointer(&buf[0])) = 1
-	IsBigEndian = buf[0] != 1
-	IsLittleEndian = !IsBigEndian
-	if IsBigEndian {
+	if BigEndian {
 		NativeEndian = binary.BigEndian
 	} else {
 		NativeEndian = binary.LittleEndian
