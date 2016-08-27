@@ -1,11 +1,13 @@
 package ringbuf
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"math/rand"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -47,7 +49,7 @@ func TestRing(t *testing.T) {
 	}
 }
 
-func TestReadWrite(t *testing.T) {
+func _TestReadWrite(t *testing.T) {
 	wg := sync.WaitGroup{}
 	p := New(1024)
 	const N = 2000
@@ -244,6 +246,78 @@ func recv(r *RingBuf, pkt []byte) []byte {
 	return p
 }
 
+func _TestMultiWriteMux(t *testing.T) {
+	const kN_PIPES = kN_PIPES / 10
+	wl := sync.Mutex{}
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	m := make([]byte, kS)
+	rand.Read(m)
+	b := New(kBS * kN_PIPES)
+	println(kN * kN_PIPES)
+	sm := th.TotalAlloc()
+	wg.Add(1)
+	go func() {
+		rm := make([]byte, kS)
+		for i := 0; i < kN*kN_PIPES; i++ {
+			b.Read(rm)
+		}
+		wg.Done()
+	}()
+	for i := 0; i < kN_PIPES; i++ {
+		wg.Add(1)
+		go func() {
+			for i := 0; i < kN; i++ {
+				wl.Lock()
+				b.Write(m)
+				wl.Unlock()
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kN_PIPES), elapsed), th.MemSince(sm))
+}
+
+func multiWriteHelper(t *testing.T, kN_PIPES int, kN int) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	m := make([]byte, kS)
+	rand.Read(m)
+	b := New(kBS * kN_PIPES)
+	sm := th.TotalAlloc()
+	wg.Add(1)
+	go func() {
+		rm := make([]byte, kS)
+		for i := 0; i < kN*kN_PIPES; i++ {
+			b.Read(rm)
+		}
+		wg.Done()
+	}()
+	for i := 0; i < kN_PIPES; i++ {
+		wg.Add(1)
+		go func() {
+			for i := 0; i < kN; i++ {
+				b.WriteLock()
+				b.Write(m)
+				b.WriteUnlock()
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(uint64(kN)*uint64(kN_PIPES), elapsed), th.MemSince(sm))
+}
+func TestMultiWrite(t *testing.T) {
+	multiWriteHelper(t, kN_PIPES/10, kN)
+}
+
+func TestMultiWrite2(t *testing.T) {
+	multiWriteHelper(t, runtime.GOMAXPROCS(0), kN*100)
+}
+
 func TestParallelThroughput(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
@@ -257,6 +331,67 @@ func TestParallelThroughput(t *testing.T) {
 		go func() {
 			for i := 0; i < kN; i++ {
 				b.Write(m)
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				b.Read(rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kN_PIPES), elapsed), th.MemSince(sm))
+}
+
+func TestParallelThroughputContext(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_PIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+	ctx, _ := context.WithTimeout(context.Background(), time.Minute)
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kN_PIPES; i++ {
+		b := New(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				b.WriteContext(ctx, m)
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				b.ReadContext(ctx, rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kN_PIPES), elapsed), th.MemSince(sm))
+}
+
+func TestParallelThroughputWithWriteLock(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_PIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kN_PIPES; i++ {
+		b := New(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				b.WriteLock()
+				b.Write(m)
+				b.WriteUnlock()
 			}
 			wg.Done()
 		}()
