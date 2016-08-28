@@ -148,8 +148,8 @@ func TestToFloat(t *testing.T) {
 	badVals := []interface{}{
 		[]byte{1, 2, 3},
 		"zork",
-		md.MaxExactFloatInt + 1,
-		md.MinExactFloatInt - 1,
+		md.MaxExactFloat64Int + 1,
+		md.MinExactFloat64Int - 1,
 	}
 
 	for _, bv := range badVals {
@@ -163,8 +163,8 @@ func TestToFloat(t *testing.T) {
 		assert.Equal(t, e, err)
 	}
 	cke("a", TypeError)
-	cke(md.MaxExactFloatInt+3, OverflowError)
-	cke(md.MinExactFloatInt-3, OverflowError)
+	cke(md.MaxExactFloat64Int+3, OverflowError)
+	cke(md.MinExactFloat64Int-3, OverflowError)
 
 	//TODO test Opt/Arg
 	t.Fail()

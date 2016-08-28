@@ -407,3 +407,35 @@ func TestParallelThroughputWithWriteLock(t *testing.T) {
 	elapsed := time.Since(st)
 	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kN_PIPES), elapsed), th.MemSince(sm))
 }
+
+func TestParallelThroughputWithWriteLockContext(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kN_PIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+	ctx := context.Background()
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kN_PIPES; i++ {
+		b := New(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				b.WriteLockContext(ctx)
+				b.WriteContext(ctx, m)
+				b.WriteUnlock()
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				b.ReadContext(ctx, rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kN_PIPES), elapsed), th.MemSince(sm))
+}

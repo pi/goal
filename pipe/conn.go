@@ -3,7 +3,6 @@ package pipe
 
 import (
 	"net"
-	"sync"
 	"time"
 )
 
@@ -13,8 +12,37 @@ func (a pipeAddr) Network() string { return "pipe" }
 func (a pipeAddr) String() string  { return "pipe" }
 
 type pipeConn struct {
-	rp, wp *Pipe
-	rlock  sync.Mutex
+	r Reader
+	w Writer
+}
+
+func newConn(r1 Reader, w1 Writer, r2 Reader, w2 Writer) (net.Conn, net.Conn) {
+	return &pipeConn{
+			r: r1,
+			w: w2,
+		},
+		&pipeConn{
+			r: r2,
+			w: w1,
+		}
+}
+
+func Conn(bufSize int) (net.Conn, net.Conn) {
+	r1, w1 := Pipe(bufSize)
+	r2, w2 := Pipe(bufSize)
+	return newConn(r1, w1, r2, w2)
+}
+
+func SyncConn(bufSize int) (net.Conn, net.Conn) {
+	r1, w1 := SyncPipe(bufSize)
+	r2, w2 := SyncPipe(bufSize)
+	return newConn(r1, w1, r2, w2)
+}
+
+func SyncWriteConn(bufSize int) (net.Conn, net.Conn) {
+	r1, w1 := SyncWritePipe(bufSize)
+	r2, w2 := SyncWritePipe(bufSize)
+	return newConn(r1, w1, r2, w2)
 }
 
 func (c *pipeConn) LocalAddr() net.Addr {
@@ -26,24 +54,24 @@ func (c *pipeConn) RemoteAddr() net.Addr {
 }
 
 func (c *pipeConn) SetReadDeadline(deadline time.Time) error {
-	c.rp.SetReadDeadline(deadline)
+	//TODO c.rp.SetReadDeadline(deadline)
 	return nil
 }
 
 func (c *pipeConn) SetWriteDeadline(deadline time.Time) error {
-	c.wp.SetWriteDeadline(deadline)
+	//TODO c.wp.SetWriteDeadline(deadline)
 	return nil
 }
 
 func (c *pipeConn) SetDeadline(deadline time.Time) error {
-	c.rp.SetReadDeadline(deadline)
-	c.wp.SetWriteDeadline(deadline)
+	//TODO c.rp.SetReadDeadline(deadline)
+	//TODO c.wp.SetWriteDeadline(deadline)
 	return nil
 }
 
 func (c *pipeConn) Close() error {
-	err1 := c.rp.Close()
-	err := c.wp.Close()
+	err1 := c.r.Close()
+	err := c.w.Close()
 	if err == nil {
 		err = err1
 	}
@@ -51,24 +79,9 @@ func (c *pipeConn) Close() error {
 }
 
 func (c *pipeConn) Read(buf []byte) (int, error) {
-	c.rlock.Lock()
-	defer c.rlock.Unlock()
-	return c.rp.Read(buf)
+	return c.r.Read(buf)
 }
 
 func (c *pipeConn) Write(buf []byte) (int, error) {
-	return c.wp.Write(buf)
-}
-
-func Conn(bufSize int) (net.Conn, net.Conn) {
-	p1 := New(bufSize)
-	p2 := New(bufSize)
-	return &pipeConn{
-			rp: p1,
-			wp: p2,
-		},
-		&pipeConn{
-			rp: p2,
-			wp: p1,
-		}
+	return c.w.Write(buf)
 }

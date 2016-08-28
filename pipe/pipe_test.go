@@ -1,12 +1,13 @@
 package pipe
 
 import (
-	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"math/rand"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -15,14 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const kN = 100000
-const kS = 32
-const kBS = kS * 1000
-const kNPIPES = 1000
-
-func TestPipeCap(t *testing.T) {
+func TestCap(t *testing.T) {
 	ck := func(n int, must int) {
-		p := New(n)
+		p, _ := Pipe(n)
 		require.EqualValues(t, must, p.Cap())
 	}
 	ck(0, defaultBufferSize)
@@ -36,135 +32,87 @@ func TestPipeCap(t *testing.T) {
 	ck(32, 32)
 }
 
-func TestPipeRing(t *testing.T) {
-	p := New(kBS)
+func TestRing(t *testing.T) {
+	r, w := Pipe(kBS)
 	m := make([]byte, kS)
 	rand.Read(m)
 	const N = kN
 	rm := make([]byte, kS)
 	for i := 0; i < N; i++ {
-		for (p.Cap() - p.ReadAvail()) < kS {
-			recv(p, rm)
+		for w.WriteAvail() < kS {
+			r.Read(rm)
 		}
-		send(p, m)
+		w.Write(m)
 	}
-	for p.ReadAvail() > 0 {
-		recv(p, rm)
+	for r.ReadAvail() > 0 {
+		r.Read(rm)
 	}
 }
 
-func TestPipeReadWrite(t *testing.T) {
+func _TestReadWrite(t *testing.T) {
 	wg := sync.WaitGroup{}
-	p := New(1024)
+	r, w := Pipe(1024)
 	const N = 2000
 	wg.Add(2)
 	go func() {
 		buf := make([]byte, 300)
 		for i := 0; i < N; i++ {
-			send(p, genMsg(buf))
+			m := genMsg(buf)
+			for w.WriteAvail() < len(m)+5 {
+				time.Sleep(time.Millisecond)
+			}
+			send(w, m)
 		}
 		wg.Done()
 	}()
 	go func() {
 		rm := make([]byte, 300)
 		for i := 0; i < N; i++ {
-			recv(p, rm)
+			recv(r, rm)
 		}
 		wg.Done()
 	}()
 	wg.Wait()
 }
 
-func TestPipeParallelWrite(t *testing.T) {
-	const kNPIPES = 100
-	wg := sync.WaitGroup{}
-	p := New(kBS * kNPIPES)
-
-	st := time.Now()
-	sm := th.TotalAlloc()
-	wg.Add(1)
-	go func() {
-		buf := make([]byte, kS)
-		for i := 0; i < kN*kNPIPES; i++ {
-			//recv(p, buf)
-			p.Read(buf)
-		}
-		wg.Done()
-	}()
-
-	for i := 0; i < kNPIPES; i++ {
-		wg.Add(1)
-		go func() {
-			//buf := make([]byte, 300)
-			m := genMsg(nil)
-			for i := 0; i < kN; i++ {
-				//send(p, m) //genMsg(buf))
-				p.Write(m)
-			}
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*kNPIPES, elapsed), th.MemSince(sm))
-}
-
-func TestPipeOvercap(t *testing.T) {
-	p := New(16)
-	m := make([]byte, 32)
-	_, err := rand.Read(m)
-	if err != nil {
-		panic("rand.Read error " + err.Error())
-	}
-	rm := make([]byte, 32)
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	go func() {
-		readAll(p, rm)
-		wg.Done()
-	}()
-	go func() {
-		p.Write(m)
-		wg.Done()
-	}()
-	wg.Wait()
-	if crc32.ChecksumIEEE(m) != crc32.ChecksumIEEE(rm) {
-		t.Fatal("crc mismatch")
-	}
-}
-
-func TestPipeClose(t *testing.T) {
-	p := New(10)
-	require.False(t, p.IsClosed())
-	p.Close()
-	require.True(t, p.IsClosed())
-	_, err := p.Write([]byte("t"))
+func TestClose(t *testing.T) {
+	r, w := Pipe(10)
+	require.False(t, r.IsClosed())
+	require.False(t, w.IsClosed())
+	r.Close()
+	require.True(t, r.IsClosed())
+	require.True(t, w.IsClosed())
+	_, err := w.Write([]byte("t"))
 	require.Equal(t, err, io.EOF)
-	_, err = p.Read(make([]byte, 10))
+	_, err = r.Read(make([]byte, 10))
 	require.Equal(t, err, io.EOF)
 
-	p.Reopen()
-	require.False(t, p.IsClosed())
+	r, w = Pipe(10)
+	require.False(t, r.IsClosed())
+	require.False(t, w.IsClosed())
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
-	p.Write([]byte("t"))
-	p.Close()
+	w.Write([]byte("t"))
+	w.Close()
 	{
-		var err error
-		var s []byte
-		var nw int
+		var (
+			err error
+			s   []byte
+			nw  int
+			nr  int
+		)
 
 		s = make([]byte, 2)
-		n, err := p.Read(s)
-		require.Equal(t, string(s[:n]), "t")
+		nr, err = r.Read(s)
+		require.Equal(t, string(s[:nr]), "t")
 		require.Equal(t, io.EOF, err)
-		nw, err = p.Write(s)
+		nw, err = w.Write([]byte("t"))
 		require.EqualValues(t, nw, 0)
 		require.Equal(t, io.EOF, err)
 	}
 
-	p.Reopen()
+	r, w = Pipe(10)
 	type res struct {
 		m   []byte
 		n   int
@@ -173,17 +121,17 @@ func TestPipeClose(t *testing.T) {
 	c := make(chan res)
 	go func() {
 		m := make([]byte, 10)
-		n, err := p.Read(m)
+		n, err := r.Read(m)
 		c <- res{m, n, err}
 	}()
 	go func() {
-		p.Write([]byte{0xFE})
-		p.Close()
+		w.Write([]byte{0xFE})
+		w.Close()
 	}()
-	r := <-c
-	require.EqualValues(t, r.n, 1)
-	require.EqualValues(t, r.m[0], 0xFE)
-	require.Equal(t, io.EOF, r.err)
+	rv := <-c
+	require.EqualValues(t, rv.n, 1)
+	require.EqualValues(t, rv.m[0], 0xFE)
+	require.Equal(t, io.EOF, rv.err)
 }
 
 func psum(data []byte) (sum int) {
@@ -192,6 +140,11 @@ func psum(data []byte) (sum int) {
 	}
 	return
 }
+
+const kN = 100000
+const kS = 32
+const kBS = kS * 1000
+const kNPIPES = 1000
 
 func xferSpeed(nmsg uint64, elapsed time.Duration) string {
 	return fmt.Sprintf("mps:%.2fM, %s/s", float64(nmsg)*1000.0/float64(elapsed.Nanoseconds()), th.MemString(uint64(float64(nmsg)*kS/elapsed.Seconds())))
@@ -224,20 +177,17 @@ func send(w io.Writer, data []byte) int {
 	if len(data) > 255-1-4 {
 		panicf("packet too long: %d", len(data))
 	}
-	pkt := make([]byte, 1+len(data)+4)
-	pkt[0] = byte(len(data))
-	copy(pkt[1:1+len(data)], data)
-	binary.LittleEndian.PutUint32(pkt[1+len(data):], crc32.ChecksumIEEE(data))
-	writeAll(w, pkt)
-	return len(pkt)
+	var l [1]byte
+	l[0] = byte(len(data))
+	writeAll(w, l[:])
+	writeAll(w, data)
+	var cs [4]byte
+	binary.LittleEndian.PutUint32(cs[:], crc32.ChecksumIEEE(data))
+	writeAll(w, cs[:])
+	return 1 + len(data) + 4
 }
 
 func genMsg(buf []byte) []byte {
-	if buf == nil {
-		buf = make([]byte, 32)
-		rand.Read(buf)
-		return buf
-	}
 	max := len(buf)
 	if max > 200 {
 		max = 200
@@ -245,6 +195,26 @@ func genMsg(buf []byte) []byte {
 	l := rand.Int63()%int64(max) + 1
 	rand.Read(buf[:l])
 	return buf[:l]
+}
+
+func rbsend(w *Writer, data []byte) int {
+	if len(data) > 255-1-4 {
+		panicf("packet too long: %d", len(data))
+	}
+	var (
+		l  [1]byte
+		cs [4]byte
+	)
+	l[0] = byte(len(data))
+	binary.LittleEndian.PutUint32(cs[:], crc32.ChecksumIEEE(data))
+	nw, err := w.WriteAll(l[:], data, cs[:])
+	if nw != int64(len(data)+len(l)+len(cs)) {
+		panic("ringbuf.WriteChunks fail")
+	}
+	if err != nil {
+		panic(err)
+	}
+	return int(nw)
 }
 
 func readAll(r io.Reader, buf []byte) {
@@ -257,13 +227,17 @@ func readAll(r io.Reader, buf []byte) {
 	}
 }
 
-func recv(r io.Reader, pkt []byte) []byte {
+func recv(r *Reader, pkt []byte) []byte {
 	var a [1]byte
+
 	t := a[:]
 	readAll(r, t)
 	pktLen := int(uint(t[0]))
 	if pktLen > len(pkt) {
 		panicf("pkt buffer size %d too small for packet len %d", len(pkt), pktLen)
+	}
+	for r.ReadAvail() < pktLen+4 {
+		time.Sleep(time.Millisecond)
 	}
 	p := pkt[:pktLen]
 	readAll(r, p)
@@ -275,70 +249,31 @@ func recv(r io.Reader, pkt []byte) []byte {
 	return p
 }
 
-func sendRaw(w io.Writer, buf []byte) {
-	w.Write(buf)
-}
-func recvRaw(r io.Reader, buf []byte) {
-	r.Read(buf)
-}
-
-func bufferTestHelper() {
-	m := make([]byte, kS)
-	for i := 0; i < kS; i++ {
-		m[i] = byte(i + 2)
-	}
-	tb := make([]byte, kBS)
-	rm := make([]byte, kS)
-	wb := bytes.NewBuffer(tb)
-	rb := bytes.NewReader(tb)
-	for i := 0; i < kN; i++ {
-		wb.Reset()
-		sendRaw(wb, m)
-
-		rb.Seek(0, 0)
-		recvRaw(rb, rm)
-		if rm[0] != m[0] {
-			panic("ouch")
-		}
-	}
-}
-
-func _TestBufferThroughput(t *testing.T) {
-	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES)
-	st := time.Now()
-	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		go func() {
-			bufferTestHelper()
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(st)
-	fmt.Printf("%v, %s, mem:%s\n", elapsed, xferSpeed(kNPIPES*kN, elapsed), th.MemSince(sm))
-}
-
-func TestPipeParallelThroughput(t *testing.T) {
+func _TestMultiWriteMux(t *testing.T) {
+	const kNPIPES = kNPIPES / 10
+	wl := sync.Mutex{}
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES * 2)
 	m := make([]byte, kS)
 	rand.Read(m)
-
+	r, w := Pipe(kBS * kNPIPES)
+	println(kN * kNPIPES)
 	sm := th.TotalAlloc()
+	wg.Add(1)
+	go func() {
+		rm := make([]byte, kS)
+		for i := 0; i < kN*kNPIPES; i++ {
+			r.Read(rm)
+		}
+		wg.Done()
+	}()
 	for i := 0; i < kNPIPES; i++ {
-		b := New(kBS)
+		wg.Add(1)
 		go func() {
 			for i := 0; i < kN; i++ {
-				b.Write(m)
-			}
-			wg.Done()
-		}()
-		go func() {
-			rm := make([]byte, kS)
-			for nr := 0; nr < kN; nr++ {
-				b.Read(rm)
+				wl.Lock()
+				w.Write(m)
+				wl.Unlock()
 			}
 			wg.Done()
 		}()
@@ -348,36 +283,162 @@ func TestPipeParallelThroughput(t *testing.T) {
 	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
 }
 
-func testParallelChannelsHelper(dwg *sync.WaitGroup) {
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	c := make(chan []byte, 10)
-	m := make([]byte, kS)
-	go func() {
-		for i := 0; i < kN; i++ {
-			c <- m
-		}
-		wg.Done()
-	}()
-	go func() {
-		r := make([]byte, kS)
-		for i := 0; i < kN; i++ {
-			copy(r, <-c)
-		}
-		wg.Done()
-	}()
-	wg.Wait()
-	dwg.Done()
-}
-func _TestParallelChannels(t *testing.T) {
-	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES)
+func multiWriteHelper(t *testing.T, kNPIPES int, kN int) {
 	st := time.Now()
+	wg := &sync.WaitGroup{}
+	m := make([]byte, kS)
+	rand.Read(m)
+	r, w := Pipe(kBS * kNPIPES)
 	sm := th.TotalAlloc()
+	wg.Add(1)
+	go func() {
+		rm := make([]byte, kS)
+		for i := 0; i < kN*kNPIPES; i++ {
+			r.Read(rm)
+		}
+		wg.Done()
+	}()
 	for i := 0; i < kNPIPES; i++ {
-		testParallelChannelsHelper(wg)
+		wg.Add(1)
+		go func() {
+			for i := 0; i < kN; i++ {
+				w.Lock()
+				w.Write(m)
+				w.Unlock()
+			}
+			wg.Done()
+		}()
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("parallel channels time: %v, %s, mem:%s\n", elapsed, xferSpeed(kN*kNPIPES, elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(uint64(kN)*uint64(kNPIPES), elapsed), th.MemSince(sm))
+}
+func TestMultiWrite(t *testing.T) {
+	multiWriteHelper(t, kNPIPES/10, kN)
+}
+
+func TestMultiWrite2(t *testing.T) {
+	multiWriteHelper(t, runtime.GOMAXPROCS(0), kN*100)
+}
+
+func TestParallelThroughput(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kNPIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kNPIPES; i++ {
+		r, w := Pipe(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				w.Write(m)
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				r.Read(rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+}
+
+func TestParallelThroughputContext(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kNPIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+	ctx, _ := context.WithTimeout(context.Background(), time.Minute)
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kNPIPES; i++ {
+		r, w := Pipe(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				w.WriteWithContext(ctx, m)
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				r.ReadWithContext(ctx, rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+}
+
+func TestParallelThroughputWithWriteLock(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kNPIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kNPIPES; i++ {
+		r, w := Pipe(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				w.Lock()
+				w.Write(m)
+				w.Unlock()
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				r.Read(rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+}
+
+func TestParallelThroughputWithWriteLockContext(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	wg.Add(kNPIPES * 2)
+	m := make([]byte, kS)
+	rand.Read(m)
+	ctx := context.Background()
+
+	sm := th.TotalAlloc()
+	for i := 0; i < kNPIPES; i++ {
+		r, w := Pipe(kBS)
+		go func() {
+			for i := 0; i < kN; i++ {
+				w.LockWithContext(ctx)
+				w.WriteWithContext(ctx, m)
+				w.Unlock()
+			}
+			wg.Done()
+		}()
+		go func() {
+			rm := make([]byte, kS)
+			for i := 0; i < kN; i++ {
+				r.ReadWithContext(ctx, rm)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
 }

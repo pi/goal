@@ -1,4 +1,4 @@
-package ringbuf
+package pipe
 
 import (
 	"context"
@@ -10,19 +10,17 @@ import (
 	"github.com/pi/goal/gut"
 )
 
-const debug = 0
-
 var ErrOvercap = errors.New("Buffer overcap")
 
-type RingBuf struct {
-	bits uint64 // highest bit - close flag. next 31 bits: read pos, next bit - unused, next 31 bits: read avail
-	mem  []byte
-	mask int
-	wsig chan struct{}
-	rsig chan struct{}
-	lsig chan struct{}
-	wlck int32
-	wq   int32
+type ringbuf struct {
+	pbits *uint64 // highest bit - close flag. next 31 bits: read pos, next bit - unused, next 31 bits: read avail
+	mem   []byte
+	mask  int
+	wsig  chan struct{}
+	rsig  chan struct{}
+	lsig  chan struct{}
+	lck   int32
+	lq    int32
 }
 
 const low63bits = ^uint64(0) >> 1
@@ -35,42 +33,6 @@ const headerFlagMask = closeFlag
 const defaultBufferSize = 32 * 1024
 const minBufferSize = 8
 
-func With(mem []byte) *RingBuf {
-	if mem == nil {
-		mem = make([]byte, defaultBufferSize)
-	}
-	max := len(mem)
-	if (max & (max - 1)) != 0 {
-		panic("Buffer size should be power of two")
-	}
-	if int(low31bits) < max-1 {
-		panic("ringbuffer size is too large")
-	}
-	return &RingBuf{
-		mem:  mem,
-		mask: max - 1,
-		rsig: make(chan struct{}, 1),
-		wsig: make(chan struct{}, 1),
-		lsig: make(chan struct{}, 1),
-	}
-}
-
-func New(max int) *RingBuf {
-	if max == 0 {
-		max = defaultBufferSize
-	} else if max < minBufferSize {
-		max = minBufferSize
-	} else if (max & (max - 1)) != 0 {
-		// round up to power of two
-		max = 1 << gut.BitLen(uint(max))
-	}
-	if int(low31bits) < max-1 {
-		panic("ringbuffer size is too large")
-	}
-
-	return With(make([]byte, max))
-}
-
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -78,18 +40,18 @@ func minInt(a, b int) int {
 	return b
 }
 
-func (b *RingBuf) loadHeader() (hs uint64, closed bool, readPos int, readAvail int) {
-	hs = atomic.LoadUint64(&b.bits)
+func (b *ringbuf) loadHeader() (hs uint64, closed bool, readPos int, readAvail int) {
+	hs = atomic.LoadUint64(b.pbits)
 	closed = (hs & closeFlag) != 0
 	readPos = int((hs >> 32) & uint64(low31bits))
 	readAvail = int(hs & uint64(low31bits))
 	return
 }
 
-func (b *RingBuf) Close() error {
+func (b *ringbuf) Close() error {
 	for {
-		hs := atomic.LoadUint64(&b.bits)
-		if ((hs & closeFlag) != 0) || atomic.CompareAndSwapUint64(&b.bits, hs, hs|closeFlag) {
+		hs := atomic.LoadUint64(b.pbits)
+		if ((hs & closeFlag) != 0) || atomic.CompareAndSwapUint64(b.pbits, hs, hs|closeFlag) {
 			if (hs & closeFlag) == 0 {
 				close(b.rsig)
 				close(b.wsig)
@@ -101,17 +63,18 @@ func (b *RingBuf) Close() error {
 	}
 }
 
-func (b *RingBuf) Reopen() {
+/*
+func (b *ringbuf) Reopen() {
 	b.rsig = make(chan struct{}, 1)
 	b.wsig = make(chan struct{}, 1)
 	b.lsig = make(chan struct{}, 1)
-	b.bits = 0 // reset head and size
-	b.wlck = 0
-	b.wq = 0
-}
+	*b.pbits = 0 // reset head and size
+	b.lck = 0
+	b.lq = 0
+}*/
 
-func (b *RingBuf) IsClosed() bool {
-	return (atomic.LoadUint64(&b.bits) & closeFlag) != 0
+func (b *ringbuf) IsClosed() bool {
+	return (atomic.LoadUint64(b.pbits) & closeFlag) != 0
 }
 
 func notify(c chan struct{}) {
@@ -121,7 +84,7 @@ func notify(c chan struct{}) {
 	}
 }
 
-func (b *RingBuf) Read(data []byte) (int, error) {
+func (b *ringbuf) read(data []byte) (int, error) {
 	toRead := len(data)
 	if toRead == 0 {
 		if b.IsClosed() {
@@ -146,7 +109,7 @@ func (b *RingBuf) Read(data []byte) (int, error) {
 			for {
 				head = (head + nr) & b.mask
 				sz -= nr
-				if atomic.CompareAndSwapUint64(&b.bits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
+				if atomic.CompareAndSwapUint64(b.pbits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
 					break
 				}
 				runtime.Gosched()
@@ -167,7 +130,7 @@ func (b *RingBuf) Read(data []byte) (int, error) {
 	return readed, nil
 }
 
-func (b *RingBuf) Write(data []byte) (int, error) {
+func (b *ringbuf) write(data []byte) (int, error) {
 	toWrite := len(data)
 	if toWrite == 0 {
 		if b.IsClosed() {
@@ -194,7 +157,7 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 			} else {
 				copy(b.mem[writePos:writePos+nw], data[written:written+nw])
 			}
-			atomic.AddUint64(&b.bits, uint64(nw))
+			atomic.AddUint64(b.pbits, uint64(nw))
 			written += nw
 			notify(b.wsig)
 		} else {
@@ -207,7 +170,7 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 	return toWrite, nil
 }
 
-func (b *RingBuf) ReadContext(ctx context.Context, data []byte) (int, error) {
+func (b *ringbuf) readWithContext(ctx context.Context, data []byte) (int, error) {
 	toRead := len(data)
 	if toRead == 0 {
 		if b.IsClosed() {
@@ -233,7 +196,7 @@ func (b *RingBuf) ReadContext(ctx context.Context, data []byte) (int, error) {
 				head = (head + nr) & b.mask
 				sz -= nr
 				nhs := (hs & headerFlagMask) | (uint64(head) << 32) | uint64(sz)
-				if atomic.CompareAndSwapUint64(&b.bits, hs, nhs) {
+				if atomic.CompareAndSwapUint64(b.pbits, hs, nhs) {
 					break
 				}
 				runtime.Gosched()
@@ -258,7 +221,7 @@ func (b *RingBuf) ReadContext(ctx context.Context, data []byte) (int, error) {
 	return readed, nil
 }
 
-func (b *RingBuf) WriteContext(ctx context.Context, data []byte) (int, error) {
+func (b *ringbuf) writeWithContext(ctx context.Context, data []byte) (int, error) {
 	toWrite := len(data)
 	if toWrite == 0 {
 		if b.IsClosed() {
@@ -285,7 +248,7 @@ func (b *RingBuf) WriteContext(ctx context.Context, data []byte) (int, error) {
 			} else {
 				copy(b.mem[writePos:writePos+nw], data[written:written+nw])
 			}
-			atomic.AddUint64(&b.bits, uint64(nw))
+			atomic.AddUint64(b.pbits, uint64(nw))
 			written += nw
 			notify(b.wsig)
 		} else {
@@ -302,7 +265,7 @@ func (b *RingBuf) WriteContext(ctx context.Context, data []byte) (int, error) {
 	return toWrite, nil
 }
 
-func (b *RingBuf) Peek(data []byte) (int, error) {
+func (b *ringbuf) peek(data []byte) (int, error) {
 	_, closed, head, nr := b.loadHeader()
 	if nr > len(data) {
 		nr = len(data)
@@ -323,7 +286,7 @@ func (b *RingBuf) Peek(data []byte) (int, error) {
 	return nr, nil
 }
 
-func (b *RingBuf) Skip(toSkip int) (int, error) {
+func (b *ringbuf) skip(toSkip int) (int, error) {
 	if toSkip <= 0 {
 		if b.IsClosed() {
 			return 0, io.EOF
@@ -338,7 +301,7 @@ func (b *RingBuf) Skip(toSkip int) (int, error) {
 			for {
 				head = (head + n) & b.mask
 				sz -= n
-				if atomic.CompareAndSwapUint64(&b.bits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
+				if atomic.CompareAndSwapUint64(b.pbits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
 					break
 				}
 				runtime.Gosched()
@@ -359,7 +322,7 @@ func (b *RingBuf) Skip(toSkip int) (int, error) {
 	return skipped, nil
 }
 
-func (b *RingBuf) SkipContext(ctx context.Context, toSkip int) (int, error) {
+func (b *ringbuf) skipWithContext(ctx context.Context, toSkip int) (int, error) {
 	if toSkip <= 0 {
 		if b.IsClosed() {
 			return 0, io.EOF
@@ -374,7 +337,7 @@ func (b *RingBuf) SkipContext(ctx context.Context, toSkip int) (int, error) {
 			for {
 				head = (head + n) & b.mask
 				sz -= n
-				if atomic.CompareAndSwapUint64(&b.bits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
+				if atomic.CompareAndSwapUint64(b.pbits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
 					break
 				}
 				runtime.Gosched()
@@ -400,21 +363,16 @@ func (b *RingBuf) SkipContext(ctx context.Context, toSkip int) (int, error) {
 }
 
 // ReadAvaial returns number of bytes availbale to immediate read
-func (b *RingBuf) ReadAvail() int {
-	return int(atomic.LoadUint64(&b.bits) & uint64(low31bits))
-}
-
-// WriteAvail returns number of bytes that can be written immediately
-func (b *RingBuf) WriteAvail() int {
-	return b.Cap() - b.ReadAvail()
+func (b *ringbuf) readAvail() int {
+	return int(atomic.LoadUint64(b.pbits) & uint64(low31bits))
 }
 
 // Cap returns capacity of the buffer
-func (b *RingBuf) Cap() int {
+func (b *ringbuf) Cap() int {
 	return len(b.mem)
 }
 
-func (b *RingBuf) WriteAll(chunks ...[]byte) (int64, error) {
+func (b *ringbuf) writeAll(chunks ...[]byte) (int64, error) {
 	var written int64
 	for _, data := range chunks {
 		n, err := b.Write(data)
@@ -426,27 +384,27 @@ func (b *RingBuf) WriteAll(chunks ...[]byte) (int64, error) {
 	return written, nil
 }
 
-func (b *RingBuf) WriteUnlock() {
-	atomic.StoreInt32(&b.wlck, 0)
-	if atomic.LoadInt32(&b.wq) != 0 && !b.IsClosed() {
+func (b *ringbuf) unlock() {
+	atomic.StoreInt32(&b.lck, 0)
+	if atomic.LoadInt32(&b.lq) != 0 && !b.IsClosed() {
 		notify(b.lsig)
 	}
 }
 
-func (b *RingBuf) WriteLock() error {
+func (b *ringbuf) lock() error {
 	// fast path
-	wlck := atomic.LoadInt32(&b.wlck)
-	if (wlck == 0) && atomic.CompareAndSwapInt32(&b.wlck, 0, 1) {
+	lck := atomic.LoadInt32(&b.lck)
+	if (lck == 0) && atomic.CompareAndSwapInt32(&b.lck, 0, 1) {
 		return nil
 	}
 	// slow path
-	atomic.AddInt32(&b.wq, 1)
+	atomic.AddInt32(&b.lq, 1)
 	for {
 		// first spin some
 		for i := 0; i < 100; i++ {
-			wlck = atomic.LoadInt32(&b.wlck)
-			if (wlck == 0) && atomic.CompareAndSwapInt32(&b.wlck, 0, 1) {
-				atomic.AddInt32(&b.wq, -1)
+			lck = atomic.LoadInt32(&b.lck)
+			if (lck == 0) && atomic.CompareAndSwapInt32(&b.lck, 0, 1) {
+				atomic.AddInt32(&b.lq, -1)
 				return nil
 			}
 			runtime.Gosched()
@@ -454,26 +412,26 @@ func (b *RingBuf) WriteLock() error {
 		// then wait notification
 		<-b.lsig
 		if b.IsClosed() {
-			atomic.AddInt32(&b.wq, 1)
+			atomic.AddInt32(&b.lq, 1)
 			return io.EOF
 		}
 	}
 }
 
-func (b *RingBuf) WriteLockContext(ctx context.Context) error {
+func (b *ringbuf) lockWithContext(ctx context.Context) error {
 	// fast path
-	wlck := atomic.LoadInt32(&b.wlck)
-	if (wlck == 0) && atomic.CompareAndSwapInt32(&b.wlck, 0, 1) {
+	lck := atomic.LoadInt32(&b.lck)
+	if (lck == 0) && atomic.CompareAndSwapInt32(&b.lck, 0, 1) {
 		return nil
 	}
 	// slow path
-	atomic.AddInt32(&b.wq, 1)
+	atomic.AddInt32(&b.lq, 1)
 	for {
 		// first spin some
 		for i := 0; i < 100; i++ {
-			wlck = atomic.LoadInt32(&b.wlck)
-			if (wlck == 0) && atomic.CompareAndSwapInt32(&b.wlck, 0, 1) {
-				atomic.AddInt32(&b.wq, -1)
+			lck = atomic.LoadInt32(&b.lck)
+			if (lck == 0) && atomic.CompareAndSwapInt32(&b.lck, 0, 1) {
+				atomic.AddInt32(&b.lq, -1)
 				return nil
 			}
 			runtime.Gosched()
@@ -482,11 +440,11 @@ func (b *RingBuf) WriteLockContext(ctx context.Context) error {
 		select {
 		case <-b.lsig:
 		case <-ctx.Done():
-			atomic.AddInt32(&b.wq, 1)
+			atomic.AddInt32(&b.lq, 1)
 			return ctx.Err()
 		}
 		if b.IsClosed() {
-			atomic.AddInt32(&b.wq, 1)
+			atomic.AddInt32(&b.lq, 1)
 			return io.EOF
 		}
 	}

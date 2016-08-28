@@ -19,6 +19,6 @@ func TestBitLen(t *testing.T) {
 	g := th.NewSeqGen(th.SgRand)
 	for i := 0; i < 10000; i++ {
 		v := g.Next()
-		assert.Equal(t, bl(v), BitLen(v), "%x", v)
+		assert.EqualValues(t, bl(v), BitLen(v), "%x", v)
 	}
 }

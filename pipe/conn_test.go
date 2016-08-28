@@ -10,18 +10,15 @@ import (
 	"github.com/pi/goal/th"
 )
 
-func TestPipeConn(t *testing.T) {
-	/*const kNPIPES = 1000
-	const kN = 100000
-	const kS = 32
-	const kBS = kS * 1000*/
+type connConstructor func(bufSize int) (net.Conn, net.Conn)
 
+func clientServerTestHelper(t *testing.T, ctr connConstructor) {
 	wg := sync.WaitGroup{}
 
 	st := time.Now()
 	sm := th.TotalAlloc()
 	for i := 0; i < kNPIPES; i++ {
-		srvConn, cliConn := Conn(kBS)
+		srvConn, cliConn := ctr(kBS)
 
 		wg.Add(2)
 
@@ -49,18 +46,25 @@ func TestPipeConn(t *testing.T) {
 	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, xferSpeed(kNPIPES*kN*2, elapsed), th.MemSince(sm))
 }
 
-func TestPipeConnProducerConsumer(t *testing.T) {
-	/*const kNPIPES = 1000
-	const kNMSG = 10000
-	const kS = 32
-	const kBS = kS * 1000*/
+func TestP2PPipeConnClientServer(t *testing.T) {
+	clientServerTestHelper(t, P2PConn)
+}
 
+func TestMWPipeConnClientServer(t *testing.T) {
+	clientServerTestHelper(t, MultiWriteConn)
+}
+
+func TestFullSyncPipeConnClientServer(t *testing.T) {
+	clientServerTestHelper(t, Conn)
+}
+
+func TestP2PPipeConnProducerConsumer(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	st := time.Now()
 	sm := th.TotalAlloc()
 	for i := 0; i < kNPIPES; i++ {
-		consumer, producer := Conn(kBS)
+		consumer, producer := P2PConn(kBS)
 		wg.Add(2)
 
 		go func(c net.Conn) {
@@ -84,13 +88,13 @@ func TestPipeConnProducerConsumer(t *testing.T) {
 	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, xferSpeed(kNPIPES*kN, elapsed), th.MemSince(sm))
 }
 
-func TestPipeConnParallelWrite(t *testing.T) {
+func TestMultiWritePipeConn(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	st := time.Now()
 	sm := th.TotalAlloc()
 	wg.Add(1)
-	rc, wc := Conn(kBS * kNPIPES)
+	rc, wc := MultiWriteConn(kBS * kNPIPES)
 	go func() {
 		buf := make([]byte, kS)
 		for i := 0; i < kN*kNPIPES; i++ {

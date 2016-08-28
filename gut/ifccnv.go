@@ -171,12 +171,12 @@ func ToFloat(arg interface{}) (float64, error) {
 	case float32:
 		return float64(v), nil
 	case uint:
-		if v > uint(md.MaxExactFloatInt) {
+		if v > uint(md.MaxExactFloat64Int) {
 			return 0, OverflowError
 		}
 		return float64(v), nil
 	case int:
-		if v < md.MinExactFloatInt || v > md.MaxExactFloatInt {
+		if v < md.MinExactFloat64Int || v > md.MaxExactFloat64Int {
 			return 0, OverflowError
 		}
 		return float64(v), nil
@@ -193,12 +193,12 @@ func ToFloat(arg interface{}) (float64, error) {
 	case int32:
 		return float64(v), nil
 	case uint64:
-		if v > uint64(md.MaxExactFloatInt) {
+		if v > uint64(md.MaxExactFloat64Int) {
 			return 0, OverflowError
 		}
 		return float64(v), nil
 	case int64:
-		if v < md.MinExactFloatInt || v > md.MaxExactFloatInt {
+		if v < md.MinExactFloat64Int || v > md.MaxExactFloat64Int {
 			return 0, OverflowError
 		}
 		return float64(v), nil
