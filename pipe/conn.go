@@ -2,8 +2,11 @@
 package pipe
 
 import (
+	"context"
 	"net"
 	"time"
+
+	"github.com/pi/goal/md"
 )
 
 type pipeAddr int
@@ -12,11 +15,13 @@ func (a pipeAddr) Network() string { return "pipe" }
 func (a pipeAddr) String() string  { return "pipe" }
 
 type pipeConn struct {
-	r Reader
-	w Writer
+	r             *Reader
+	w             *Writer
+	readDeadline  time.Duration
+	writeDeadline time.Duration
 }
 
-func newConn(r1 Reader, w1 Writer, r2 Reader, w2 Writer) (net.Conn, net.Conn) {
+func newConn(r1 *Reader, w1 *Writer, r2 *Reader, w2 *Writer) (net.Conn, net.Conn) {
 	return &pipeConn{
 			r: r1,
 			w: w2,
@@ -53,19 +58,26 @@ func (c *pipeConn) RemoteAddr() net.Addr {
 	return pipeAddr(0)
 }
 
+func calcDeadline(deadline time.Time) time.Duration {
+	if deadline.IsZero() {
+		return 0
+	}
+	return md.Monotime() + deadline.Sub(time.Now())
+}
+
 func (c *pipeConn) SetReadDeadline(deadline time.Time) error {
-	//TODO c.rp.SetReadDeadline(deadline)
+	c.readDeadline = calcDeadline(deadline)
 	return nil
 }
 
 func (c *pipeConn) SetWriteDeadline(deadline time.Time) error {
-	//TODO c.wp.SetWriteDeadline(deadline)
+	c.writeDeadline = calcDeadline(deadline)
 	return nil
 }
 
 func (c *pipeConn) SetDeadline(deadline time.Time) error {
-	//TODO c.rp.SetReadDeadline(deadline)
-	//TODO c.wp.SetWriteDeadline(deadline)
+	c.SetReadDeadline(deadline)
+	c.writeDeadline = c.readDeadline
 	return nil
 }
 
@@ -79,9 +91,21 @@ func (c *pipeConn) Close() error {
 }
 
 func (c *pipeConn) Read(buf []byte) (int, error) {
-	return c.r.Read(buf)
+	if c.readDeadline == 0 {
+		return c.r.Read(buf)
+	}
+	ctx, cf := context.WithTimeout(context.Background(), c.readDeadline-md.Monotime())
+	n, err := c.r.ReadWithContext(ctx, buf)
+	cf()
+	return n, err
 }
 
 func (c *pipeConn) Write(buf []byte) (int, error) {
-	return c.w.Write(buf)
+	if c.writeDeadline == 0 {
+		return c.w.Write(buf)
+	}
+	ctx, cf := context.WithTimeout(context.Background(), c.writeDeadline-md.Monotime())
+	n, err := c.w.WriteWithContext(ctx, buf)
+	cf()
+	return n, err
 }

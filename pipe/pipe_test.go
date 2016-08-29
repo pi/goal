@@ -12,9 +12,38 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/pi/goal/pipe/_testing"
+
 	"github.com/pi/goal/th"
 	"github.com/stretchr/testify/require"
 )
+
+var _ = runtime.NumCPU
+
+type TestWriterInterface interface {
+	io.Closer
+	io.Writer
+	io.ByteWriter
+	io.ReaderFrom
+	WriteAll(data ...[]byte) (int64, error)
+	WriteAllWithContext(ctx context.Context, data ...[]byte) (int64, error)
+	WriteWait(n int) error
+	WriteWaitWithContext(ctx context.Context, n int) error
+}
+
+type TestReaderInterface interface {
+	io.Closer
+	io.Reader
+	io.WriterTo
+	io.ByteReader
+	ReadWithContext(ctx context.Context, data []byte) (int, error)
+	Skip(toSkip int) (int, error)
+	SkipWithContext(ctx context.Context, toSkip int) (int, error)
+	Peek(buf []byte) (int, error)
+	Pending() int
+	ReadWait(n int) error
+	ReadWaitWithContext(ctx context.Context, n int) error
+}
 
 func TestCap(t *testing.T) {
 	ck := func(n int, must int) {
@@ -33,19 +62,28 @@ func TestCap(t *testing.T) {
 }
 
 func TestRing(t *testing.T) {
-	r, w := Pipe(kBS)
-	m := make([]byte, kS)
+	r, w := Pipe(BS)
+	m := make([]byte, S)
 	rand.Read(m)
-	const N = kN
-	rm := make([]byte, kS)
+	rm := make([]byte, S)
 	for i := 0; i < N; i++ {
-		for w.WriteAvail() < kS {
+		for {
+			_, _, _, sz := w.loadHeader()
+			if w.Cap()-sz >= S {
+				break
+			}
 			r.Read(rm)
 		}
 		w.Write(m)
 	}
-	for r.ReadAvail() > 0 {
-		r.Read(rm)
+	var p = make([]byte, 1)
+	for {
+		n, _ := r.Peek(p)
+		if n > 0 {
+			r.Read(rm)
+		} else {
+			break
+		}
 	}
 }
 
@@ -58,7 +96,11 @@ func _TestReadWrite(t *testing.T) {
 		buf := make([]byte, 300)
 		for i := 0; i < N; i++ {
 			m := genMsg(buf)
-			for w.WriteAvail() < len(m)+5 {
+			for {
+				_, _, _, sz := w.loadHeader()
+				if w.Cap()-sz >= len(m)+5 {
+					break
+				}
 				time.Sleep(time.Millisecond)
 			}
 			send(w, m)
@@ -139,15 +181,6 @@ func psum(data []byte) (sum int) {
 		sum += int(p)
 	}
 	return
-}
-
-const kN = 100000
-const kS = 32
-const kBS = kS * 1000
-const kNPIPES = 1000
-
-func xferSpeed(nmsg uint64, elapsed time.Duration) string {
-	return fmt.Sprintf("mps:%.2fM, %s/s", float64(nmsg)*1000.0/float64(elapsed.Nanoseconds()), th.MemString(uint64(float64(nmsg)*kS/elapsed.Seconds())))
 }
 
 func errstr(err error) string {
@@ -236,9 +269,6 @@ func recv(r *Reader, pkt []byte) []byte {
 	if pktLen > len(pkt) {
 		panicf("pkt buffer size %d too small for packet len %d", len(pkt), pktLen)
 	}
-	for r.ReadAvail() < pktLen+4 {
-		time.Sleep(time.Millisecond)
-	}
 	p := pkt[:pktLen]
 	readAll(r, p)
 	var cs [4]byte
@@ -250,19 +280,19 @@ func recv(r *Reader, pkt []byte) []byte {
 }
 
 func _TestMultiWriteMux(t *testing.T) {
-	const kNPIPES = kNPIPES / 10
+	kNPIPES := NPIPES / 10
 	wl := sync.Mutex{}
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	m := make([]byte, kS)
+	m := make([]byte, S)
 	rand.Read(m)
-	r, w := Pipe(kBS * kNPIPES)
-	println(kN * kNPIPES)
+	r, w := Pipe(BS * kNPIPES)
+	println(N * kNPIPES)
 	sm := th.TotalAlloc()
 	wg.Add(1)
 	go func() {
-		rm := make([]byte, kS)
-		for i := 0; i < kN*kNPIPES; i++ {
+		rm := make([]byte, S)
+		for i := 0; i < N*kNPIPES; i++ {
 			r.Read(rm)
 		}
 		wg.Done()
@@ -270,7 +300,7 @@ func _TestMultiWriteMux(t *testing.T) {
 	for i := 0; i < kNPIPES; i++ {
 		wg.Add(1)
 		go func() {
-			for i := 0; i < kN; i++ {
+			for i := 0; i < N; i++ {
 				wl.Lock()
 				w.Write(m)
 				wl.Unlock()
@@ -280,66 +310,94 @@ func _TestMultiWriteMux(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*uint64(kNPIPES), elapsed), th.MemSince(sm))
 }
 
-func multiWriteHelper(t *testing.T, kNPIPES int, kN int) {
+func multiWriteHelper(t *testing.T, NPIPES int, kN int) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	m := make([]byte, kS)
+	m := make([]byte, S)
 	rand.Read(m)
-	r, w := Pipe(kBS * kNPIPES)
+	r, w := SyncWritePipe(BS * NPIPES)
 	sm := th.TotalAlloc()
 	wg.Add(1)
 	go func() {
-		rm := make([]byte, kS)
-		for i := 0; i < kN*kNPIPES; i++ {
+		rm := make([]byte, S)
+		for i := 0; i < N*NPIPES; i++ {
 			r.Read(rm)
 		}
 		wg.Done()
 	}()
-	for i := 0; i < kNPIPES; i++ {
+	for i := 0; i < NPIPES; i++ {
 		wg.Add(1)
 		go func() {
-			for i := 0; i < kN; i++ {
-				w.Lock()
+			for i := 0; i < N; i++ {
 				w.Write(m)
-				w.Unlock()
 			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(uint64(kN)*uint64(kNPIPES), elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(uint64(N)*uint64(NPIPES), elapsed), th.MemSince(sm))
 }
 func TestMultiWrite(t *testing.T) {
-	multiWriteHelper(t, kNPIPES/10, kN)
+	multiWriteHelper(t, NPIPES/10, N)
 }
 
-func TestMultiWrite2(t *testing.T) {
-	multiWriteHelper(t, runtime.GOMAXPROCS(0), kN*100)
+func TestMultiWriteContext(t *testing.T) {
+	st := time.Now()
+	wg := &sync.WaitGroup{}
+	m := make([]byte, S)
+	rand.Read(m)
+	const NPIPES = NPIPES / 10
+	r, w := SyncWritePipe(BS * NPIPES)
+	sm := th.TotalAlloc()
+	wg.Add(1)
+	go func() {
+		ctx, cf := context.WithCancel(context.Background())
+		rm := make([]byte, S)
+		for i := 0; i < N*NPIPES; i++ {
+			r.ReadWithContext(ctx, rm)
+		}
+		wg.Done()
+		cf()
+	}()
+	for i := 0; i < NPIPES; i++ {
+		wg.Add(1)
+		go func() {
+			ctx, cf := context.WithCancel(context.Background())
+			for i := 0; i < N; i++ {
+				w.WriteWithContext(ctx, m)
+			}
+			wg.Done()
+			cf()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(st)
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(uint64(N)*uint64(NPIPES), elapsed), th.MemSince(sm))
 }
 
 func TestParallelThroughput(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES * 2)
-	m := make([]byte, kS)
+	wg.Add(NPIPES * 2)
+	m := make([]byte, S)
 	rand.Read(m)
 
 	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		r, w := Pipe(kBS)
+	for i := 0; i < NPIPES; i++ {
+		r, w := Pipe(BS)
 		go func() {
-			for i := 0; i < kN; i++ {
+			for i := 0; i < N; i++ {
 				w.Write(m)
 			}
 			wg.Done()
 		}()
 		go func() {
-			rm := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			rm := make([]byte, S)
+			for i := 0; i < N; i++ {
 				r.Read(rm)
 			}
 			wg.Done()
@@ -347,60 +405,61 @@ func TestParallelThroughput(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*uint64(NPIPES), elapsed), th.MemSince(sm))
 }
 
 func TestParallelThroughputContext(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES * 2)
-	m := make([]byte, kS)
+	wg.Add(NPIPES * 2)
+	m := make([]byte, S)
 	rand.Read(m)
-	ctx, _ := context.WithTimeout(context.Background(), time.Minute)
 
 	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		r, w := Pipe(kBS)
+	for i := 0; i < NPIPES; i++ {
+		r, w := Pipe(BS)
 		go func() {
-			for i := 0; i < kN; i++ {
+			ctx, cf := context.WithTimeout(context.Background(), time.Minute)
+			for i := 0; i < N; i++ {
 				w.WriteWithContext(ctx, m)
 			}
+			cf()
 			wg.Done()
 		}()
 		go func() {
-			rm := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			ctx, cf := context.WithTimeout(context.Background(), time.Minute)
+			rm := make([]byte, S)
+			for i := 0; i < N; i++ {
 				r.ReadWithContext(ctx, rm)
 			}
+			cf()
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*uint64(NPIPES), elapsed), th.MemSince(sm))
 }
 
 func TestParallelThroughputWithWriteLock(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES * 2)
-	m := make([]byte, kS)
+	wg.Add(NPIPES * 2)
+	m := make([]byte, S)
 	rand.Read(m)
 
 	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		r, w := Pipe(kBS)
+	for i := 0; i < NPIPES; i++ {
+		r, w := SyncWritePipe(BS)
 		go func() {
-			for i := 0; i < kN; i++ {
-				w.Lock()
+			for i := 0; i < N; i++ {
 				w.Write(m)
-				w.Unlock()
 			}
 			wg.Done()
 		}()
 		go func() {
-			rm := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			rm := make([]byte, S)
+			for i := 0; i < N; i++ {
 				r.Read(rm)
 			}
 			wg.Done()
@@ -408,31 +467,29 @@ func TestParallelThroughputWithWriteLock(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*uint64(NPIPES), elapsed), th.MemSince(sm))
 }
 
 func TestParallelThroughputWithWriteLockContext(t *testing.T) {
 	st := time.Now()
 	wg := &sync.WaitGroup{}
-	wg.Add(kNPIPES * 2)
-	m := make([]byte, kS)
+	wg.Add(NPIPES * 2)
+	m := make([]byte, S)
 	rand.Read(m)
 	ctx := context.Background()
 
 	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		r, w := Pipe(kBS)
+	for i := 0; i < NPIPES; i++ {
+		r, w := SyncWritePipe(BS)
 		go func() {
-			for i := 0; i < kN; i++ {
-				w.LockWithContext(ctx)
+			for i := 0; i < N; i++ {
 				w.WriteWithContext(ctx, m)
-				w.Unlock()
 			}
 			wg.Done()
 		}()
 		go func() {
-			rm := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			rm := make([]byte, S)
+			for i := 0; i < N; i++ {
 				r.ReadWithContext(ctx, rm)
 			}
 			wg.Done()
@@ -440,5 +497,13 @@ func TestParallelThroughputWithWriteLockContext(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*uint64(kNPIPES), elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*uint64(NPIPES), elapsed), th.MemSince(sm))
+}
+
+func TestInterface(t *testing.T) {
+	it := func() (TestReaderInterface, TestWriterInterface) {
+		r, w := Pipe(2)
+		return r, w
+	}
+	it()
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	. "./_testing"
+
 	"github.com/pi/goal/th"
 )
 
@@ -17,15 +19,15 @@ func clientServerTestHelper(t *testing.T, ctr connConstructor) {
 
 	st := time.Now()
 	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		srvConn, cliConn := ctr(kBS)
+	for i := 0; i < NPIPES; i++ {
+		srvConn, cliConn := ctr(BS)
 
 		wg.Add(2)
 
 		go func(c net.Conn) {
-			m := make([]byte, kS)
-			rm := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			m := make([]byte, S)
+			rm := make([]byte, S)
+			for i := 0; i < N; i++ {
 				c.Write(m)
 				c.Read(rm)
 			}
@@ -33,8 +35,8 @@ func clientServerTestHelper(t *testing.T, ctr connConstructor) {
 		}(cliConn)
 
 		go func(c net.Conn) {
-			m := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			m := make([]byte, S)
+			for i := 0; i < N; i++ {
 				c.Read(m)
 				c.Write(m)
 			}
@@ -43,19 +45,19 @@ func clientServerTestHelper(t *testing.T, ctr connConstructor) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, xferSpeed(kNPIPES*kN*2, elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, XferSpeed(NPIPES*N*2, elapsed), th.MemSince(sm))
 }
 
 func TestP2PPipeConnClientServer(t *testing.T) {
-	clientServerTestHelper(t, P2PConn)
+	clientServerTestHelper(t, Conn)
 }
 
 func TestMWPipeConnClientServer(t *testing.T) {
-	clientServerTestHelper(t, MultiWriteConn)
+	clientServerTestHelper(t, SyncWriteConn)
 }
 
 func TestFullSyncPipeConnClientServer(t *testing.T) {
-	clientServerTestHelper(t, Conn)
+	clientServerTestHelper(t, SyncConn)
 }
 
 func TestP2PPipeConnProducerConsumer(t *testing.T) {
@@ -63,21 +65,21 @@ func TestP2PPipeConnProducerConsumer(t *testing.T) {
 
 	st := time.Now()
 	sm := th.TotalAlloc()
-	for i := 0; i < kNPIPES; i++ {
-		consumer, producer := P2PConn(kBS)
+	for i := 0; i < NPIPES; i++ {
+		consumer, producer := Conn(BS)
 		wg.Add(2)
 
 		go func(c net.Conn) {
-			m := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			m := make([]byte, S)
+			for i := 0; i < N; i++ {
 				c.Read(m)
 			}
 			wg.Done()
 		}(consumer)
 
 		go func(c net.Conn) {
-			m := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			m := make([]byte, S)
+			for i := 0; i < N; i++ {
 				c.Write(m)
 			}
 			wg.Done()
@@ -85,7 +87,7 @@ func TestP2PPipeConnProducerConsumer(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, xferSpeed(kNPIPES*kN, elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, XferSpeed(NPIPES*N, elapsed), th.MemSince(sm))
 }
 
 func TestMultiWritePipeConn(t *testing.T) {
@@ -94,20 +96,20 @@ func TestMultiWritePipeConn(t *testing.T) {
 	st := time.Now()
 	sm := th.TotalAlloc()
 	wg.Add(1)
-	rc, wc := MultiWriteConn(kBS * kNPIPES)
+	rc, wc := SyncWriteConn(BS * NPIPES)
 	go func() {
-		buf := make([]byte, kS)
-		for i := 0; i < kN*kNPIPES; i++ {
+		buf := make([]byte, S)
+		for i := 0; i < N*NPIPES; i++ {
 			rc.Read(buf)
 		}
 		wg.Done()
 	}()
 
-	for i := 0; i < kNPIPES; i++ {
+	for i := 0; i < NPIPES; i++ {
 		wg.Add(1)
 		go func() {
-			m := make([]byte, kS)
-			for i := 0; i < kN; i++ {
+			m := make([]byte, S)
+			for i := 0; i < N; i++ {
 				wc.Write(m)
 			}
 			wg.Done()
@@ -115,5 +117,5 @@ func TestMultiWritePipeConn(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(st)
-	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, xferSpeed(kN*kNPIPES, elapsed), th.MemSince(sm))
+	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*NPIPES, elapsed), th.MemSince(sm))
 }
