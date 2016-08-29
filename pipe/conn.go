@@ -33,14 +33,14 @@ func newConn(r1 *Reader, w1 *Writer, r2 *Reader, w2 *Writer) (net.Conn, net.Conn
 }
 
 func Conn(bufSize int) (net.Conn, net.Conn) {
-	r1, w1 := Pipe(bufSize)
-	r2, w2 := Pipe(bufSize)
+	r1, w1 := SyncPipe(bufSize)
+	r2, w2 := SyncPipe(bufSize)
 	return newConn(r1, w1, r2, w2)
 }
 
-func SyncConn(bufSize int) (net.Conn, net.Conn) {
-	r1, w1 := SyncPipe(bufSize)
-	r2, w2 := SyncPipe(bufSize)
+func UnsyncConn(bufSize int) (net.Conn, net.Conn) {
+	r1, w1 := Pipe(bufSize)
+	r2, w2 := Pipe(bufSize)
 	return newConn(r1, w1, r2, w2)
 }
 

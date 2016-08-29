@@ -23,6 +23,7 @@ func (w *Writer) writeUnlocked(data []byte) (int, error) {
 	for written < toWrite {
 		_, closed, head, sz := w.loadHeader()
 		if closed {
+			notify(w.rsig) // resume other writers (if any)
 			return written, io.EOF
 		}
 		nw := minInt(w.Cap()-sz, toWrite-written)
@@ -41,6 +42,7 @@ func (w *Writer) writeUnlocked(data []byte) (int, error) {
 			notify(w.wsig)
 		} else {
 			if closed {
+				notify(w.rsig) // resume other writers (if any)
 				return written, io.EOF
 			}
 			<-w.rsig
@@ -80,6 +82,7 @@ func (w *Writer) writeUnlockedWithContext(ctx context.Context, data []byte) (int
 			notify(w.wsig)
 		} else {
 			if closed {
+				notify(w.rsig) // resume other writers (if any)
 				return written, io.EOF
 			}
 			select {
@@ -137,6 +140,7 @@ func (w *Writer) Write(data []byte) (int, error) {
 				if w.synchronized != 0 {
 					w.unlock()
 				}
+				notify(w.rsig) // resume other writers (if any)
 				return written, io.EOF
 			}
 			<-w.rsig
@@ -193,15 +197,16 @@ func (w *Writer) WriteWithContext(ctx context.Context, data []byte) (int, error)
 				if w.synchronized != 0 {
 					w.unlock()
 				}
+				notify(w.rsig) // resume other writers (if any)
 				return written, io.EOF
 			}
 			select {
 			case <-w.rsig:
-				/*case <-ctx.Done():
+			case <-ctx.Done():
 				if w.synchronized != 0 {
 					w.unlock()
 				}
-				return written, ctx.Err()*/
+				return written, ctx.Err()
 			}
 		}
 	}
@@ -276,6 +281,7 @@ func (w *Writer) WriteWait(min int) error {
 	for {
 		_, closed, _, sz := w.loadHeader()
 		if closed {
+			notify(w.rsig) // resume other writers (if any)
 			return io.EOF
 		}
 		if w.Cap()-sz >= min {
@@ -295,6 +301,7 @@ func (w *Writer) WriteWaitWithContext(ctx context.Context, min int) error {
 	for {
 		_, closed, _, sz := w.loadHeader()
 		if closed {
+			notify(w.rsig) // resume other writers (if any)
 			return io.EOF
 		}
 		if w.Cap()-sz >= min {

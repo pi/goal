@@ -174,6 +174,29 @@ func TestClose(t *testing.T) {
 	require.EqualValues(t, rv.n, 1)
 	require.EqualValues(t, rv.m[0], 0xFE)
 	require.Equal(t, io.EOF, rv.err)
+
+	r, w = SyncWritePipe(100)
+	m := make([]byte, 8)
+	for i := 0; i < 1000; i++ {
+		go func() {
+			for {
+				if _, err := w.Write(m); err != nil {
+					break
+				}
+			}
+		}()
+	}
+	go func() {
+		rm := make([]byte, 8)
+		for {
+			if _, err := r.Read(rm); err != nil {
+				break
+			}
+		}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	r.Close()
+	w.Close()
 }
 
 func psum(data []byte) (sum int) {

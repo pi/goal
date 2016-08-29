@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	. "./_testing"
+	. "github.com/pi/goal/pipe/_testing"
 
 	"github.com/pi/goal/th"
 )
@@ -48,25 +48,25 @@ func clientServerTestHelper(t *testing.T, ctr connConstructor) {
 	fmt.Printf("time spent: %v %s, mem: %s\n", elapsed, XferSpeed(NPIPES*N*2, elapsed), th.MemSince(sm))
 }
 
-func TestP2PPipeConnClientServer(t *testing.T) {
-	clientServerTestHelper(t, Conn)
+func TestUnsyncPipeConnClientServer(t *testing.T) {
+	clientServerTestHelper(t, UnsyncConn)
 }
 
-func TestMWPipeConnClientServer(t *testing.T) {
+func TestSyncWritePipeConnClientServer(t *testing.T) {
 	clientServerTestHelper(t, SyncWriteConn)
 }
 
 func TestFullSyncPipeConnClientServer(t *testing.T) {
-	clientServerTestHelper(t, SyncConn)
+	clientServerTestHelper(t, Conn)
 }
 
-func TestP2PPipeConnProducerConsumer(t *testing.T) {
+func TestUnsyncPipeConnProducerConsumer(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	st := time.Now()
 	sm := th.TotalAlloc()
 	for i := 0; i < NPIPES; i++ {
-		consumer, producer := Conn(BS)
+		consumer, producer := UnsyncConn(BS)
 		wg.Add(2)
 
 		go func(c net.Conn) {
@@ -118,4 +118,8 @@ func TestMultiWritePipeConn(t *testing.T) {
 	wg.Wait()
 	elapsed := time.Since(st)
 	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*NPIPES, elapsed), th.MemSince(sm))
+}
+
+func TestDeadlines(t *testing.T) {
+	t.Fail() //TODO
 }

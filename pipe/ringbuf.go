@@ -125,10 +125,10 @@ func (b *ringbuf) Close() error {
 		hs := atomic.LoadUint64(b.pbits)
 		if ((hs & closeFlag) != 0) || atomic.CompareAndSwapUint64(b.pbits, hs, hs|closeFlag) {
 			if (hs & closeFlag) == 0 {
-				close(b.rsig)
-				close(b.wsig)
+				notify(b.rsig)
+				notify(b.wsig)
 				if b.synchronized != 0 {
-					close(b.lsig)
+					notify(b.lsig)
 				}
 			}
 			return nil
@@ -158,7 +158,7 @@ func (b *ringbuf) Cap() int {
 
 func (b *ringbuf) unlock() {
 	atomic.StoreInt32(&b.lck, 0)
-	if atomic.LoadInt32(&b.lq) != 0 && !b.IsClosed() {
+	if atomic.LoadInt32(&b.lq) > 0 {
 		notify(b.lsig)
 	}
 }
@@ -185,6 +185,7 @@ func (b *ringbuf) lock() error {
 		<-b.lsig
 		if b.IsClosed() {
 			atomic.AddInt32(&b.lq, -1)
+			notify(b.lsig) // resume other waiters (if any)
 			return io.EOF
 		}
 	}
@@ -217,6 +218,7 @@ func (b *ringbuf) lockWithContext(ctx context.Context) error {
 		}
 		if b.IsClosed() {
 			atomic.AddInt32(&b.lq, -1)
+			notify(b.lsig) // resume other waiters (if any)
 			return io.EOF
 		}
 	}

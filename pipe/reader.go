@@ -15,6 +15,7 @@ func (r *Reader) Read(data []byte) (int, error) {
 	toRead := len(data)
 	if toRead == 0 {
 		if r.IsClosed() {
+			notify(r.wsig) // resume ohter readers (if any)
 			return 0, io.EOF
 		} else {
 			return 0, nil
@@ -61,6 +62,7 @@ func (r *Reader) Read(data []byte) (int, error) {
 				if r.synchronized != 0 {
 					r.unlock()
 				}
+				notify(r.wsig) // resume other readers (if any)
 				return readed, io.EOF
 			}
 			<-r.wsig
@@ -76,6 +78,7 @@ func (r *Reader) ReadWithContext(ctx context.Context, data []byte) (int, error) 
 	toRead := len(data)
 	if toRead == 0 {
 		if r.IsClosed() {
+			notify(r.wsig) // resume ohter waiters (if any)
 			return 0, io.EOF
 		} else {
 			return 0, nil
@@ -112,17 +115,12 @@ func (r *Reader) ReadWithContext(ctx context.Context, data []byte) (int, error) 
 			}
 			readed += nr
 			notify(r.rsig)
-			if closed {
-				if r.synchronized != 0 {
-					r.unlock()
-				}
-				return readed, io.EOF
-			}
 		} else {
 			if closed {
 				if r.synchronized != 0 {
 					r.unlock()
 				}
+				notify(r.wsig) // resume other readers (if any)
 				return readed, io.EOF
 			}
 			select {
@@ -205,6 +203,7 @@ func (r *Reader) Skip(toSkip int) (int, error) {
 				if r.synchronized != 0 {
 					r.unlock()
 				}
+				notify(r.wsig) // resume ohter waiters (if any)
 				return skipped, io.EOF
 			}
 			<-r.wsig
@@ -212,9 +211,6 @@ func (r *Reader) Skip(toSkip int) (int, error) {
 	}
 	if r.synchronized != 0 {
 		r.unlock()
-	}
-	if r.IsClosed() {
-		return skipped, io.EOF
 	}
 	return skipped, nil
 }
@@ -253,6 +249,7 @@ func (r *Reader) SkipWithContext(ctx context.Context, toSkip int) (int, error) {
 				if r.synchronized != 0 {
 					r.unlock()
 				}
+				notify(r.wsig) // resume other readers (if any)
 				return skipped, io.EOF
 			}
 			select {
@@ -264,9 +261,6 @@ func (r *Reader) SkipWithContext(ctx context.Context, toSkip int) (int, error) {
 	}
 	if r.synchronized != 0 {
 		r.unlock()
-	}
-	if r.IsClosed() {
-		return skipped, io.EOF
 	}
 	return skipped, nil
 }
@@ -289,6 +283,7 @@ func (r *Reader) ReadWait(min int) error {
 			return nil
 		}
 		if closed {
+			notify(r.wsig) // resume other readers (if any)
 			return io.EOF
 		}
 		<-r.wsig
@@ -308,6 +303,7 @@ func (r *Reader) ReadWaitWithContext(ctx context.Context, min int) error {
 			return nil
 		}
 		if closed {
+			notify(r.wsig) // resume other readers (if any)
 			return io.EOF
 		}
 		select {
