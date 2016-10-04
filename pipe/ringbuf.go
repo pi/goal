@@ -6,9 +6,26 @@ import (
 	"io"
 	"runtime"
 	"sync/atomic"
+	"time"
+
+	"github.com/pi/goal/md"
 )
 
 var ErrOvercap = errors.New("Buffer overcap")
+
+type timeoutErrorType int
+
+func (e timeoutErrorType) Error() string {
+	return "i/o timeout"
+}
+func (e timeoutErrorType) Timeout() bool {
+	return true
+}
+func (e timeoutErrorType) Temporary() bool {
+	return true
+}
+
+var timeoutError = timeoutErrorType(0)
 
 func notify(c chan struct{}) {
 	select {
@@ -24,7 +41,10 @@ type ringbuf struct {
 	wsig  chan struct{}
 	rsig  chan struct{}
 
-	synchronized int
+	deadline time.Duration
+	timeoutC <-chan time.Time
+
+	synchronized bool
 	lsig         chan struct{}
 	lck          int32
 	lq           int32
@@ -95,7 +115,7 @@ func (b *ringbuf) initWith(mem []byte, synchronized bool) {
 	b.rsig = make(chan struct{}, 1)
 
 	if synchronized {
-		b.synchronized = 1
+		b.synchronized = true
 		b.lsig = make(chan struct{}, 1)
 	}
 }
@@ -107,7 +127,7 @@ func (b *ringbuf) initFrom(src *ringbuf, sync bool) {
 	b.wsig = src.wsig
 	b.rsig = src.rsig
 	if sync {
-		b.synchronized = 1
+		b.synchronized = true
 		b.lsig = make(chan struct{}, 1)
 	}
 }
@@ -120,6 +140,14 @@ func (b *ringbuf) loadHeader() (hs uint64, closed bool, readPos int, readAvail i
 	return
 }
 
+func (b *ringbuf) dataAvail() int {
+	return int(atomic.LoadUint64(b.pbits) & uint64(low31bits))
+}
+
+func (b *ringbuf) spaceAvail() int {
+	return b.Cap() - b.dataAvail()
+}
+
 func (b *ringbuf) Close() error {
 	for {
 		hs := atomic.LoadUint64(b.pbits)
@@ -127,7 +155,7 @@ func (b *ringbuf) Close() error {
 			if (hs & closeFlag) == 0 {
 				notify(b.rsig)
 				notify(b.wsig)
-				if b.synchronized != 0 {
+				if b.synchronized {
 					notify(b.lsig)
 				}
 			}
@@ -222,4 +250,41 @@ func (b *ringbuf) lockWithContext(ctx context.Context) error {
 			return io.EOF
 		}
 	}
+}
+
+func (b *ringbuf) getDeadline() time.Time {
+	if b.deadline == 0 {
+		return time.Time{}
+	} else {
+		return time.Now().Add(b.deadline - md.Monotime())
+	}
+}
+
+func (b *ringbuf) setDeadline(deadline time.Time) {
+	if deadline.IsZero() {
+		b.deadline = 0
+		b.timeoutC = nil
+	} else {
+		timeout := deadline.Sub(time.Now())
+		b.deadline = md.Monotime() + timeout
+		b.timeoutC = time.After(timeout)
+	}
+}
+
+func (b *ringbuf) timeoutChan() (<-chan time.Time, bool) {
+	if b.deadline == 0 {
+		return nil, false
+	}
+	timeout := b.deadline - md.Monotime()
+	if timeout <= 0 {
+		return nil, true
+	}
+	return b.timeoutC, false
+}
+
+func (b *ringbuf) checkDeadline() error {
+	if b.deadline > 0 && b.deadline <= md.Monotime() {
+		return timeoutError
+	}
+	return nil
 }

@@ -10,8 +10,6 @@ import (
 	"github.com/pi/goal/gut"
 )
 
-const debug = 0
-
 var ErrOvercap = errors.New("Buffer overcap")
 
 type RingBuf struct {
@@ -91,9 +89,9 @@ func (b *RingBuf) Close() error {
 		hs := atomic.LoadUint64(&b.bits)
 		if ((hs & closeFlag) != 0) || atomic.CompareAndSwapUint64(&b.bits, hs, hs|closeFlag) {
 			if (hs & closeFlag) == 0 {
-				close(b.rsig)
-				close(b.wsig)
-				close(b.lsig)
+				notify(b.rsig)
+				notify(b.wsig)
+				notify(b.lsig)
 			}
 			return nil
 		}
@@ -102,9 +100,6 @@ func (b *RingBuf) Close() error {
 }
 
 func (b *RingBuf) Reopen() {
-	b.rsig = make(chan struct{}, 1)
-	b.wsig = make(chan struct{}, 1)
-	b.lsig = make(chan struct{}, 1)
 	b.bits = 0 // reset head and size
 	b.wlck = 0
 	b.wq = 0
@@ -159,6 +154,7 @@ func (b *RingBuf) Read(data []byte) (int, error) {
 			notify(b.rsig)
 		} else {
 			if closed {
+				notify(b.wsig) // wake other readers
 				return readed, io.EOF
 			}
 			<-b.wsig
@@ -199,6 +195,7 @@ func (b *RingBuf) Write(data []byte) (int, error) {
 			notify(b.wsig)
 		} else {
 			if closed {
+				notify(b.rsig) // wake other writers
 				return written, io.EOF
 			}
 			<-b.rsig
@@ -246,6 +243,7 @@ func (b *RingBuf) ReadContext(ctx context.Context, data []byte) (int, error) {
 			}
 		} else {
 			if closed {
+				notify(b.wsig)
 				return readed, io.EOF
 			}
 			select {
@@ -290,6 +288,7 @@ func (b *RingBuf) WriteContext(ctx context.Context, data []byte) (int, error) {
 			notify(b.wsig)
 		} else {
 			if closed {
+				notify(b.rsig)
 				return written, io.EOF
 			}
 			select {
@@ -348,6 +347,7 @@ func (b *RingBuf) Skip(toSkip int) (int, error) {
 			notify(b.rsig)
 		} else {
 			if closed {
+				notify(b.wsig)
 				return skipped, io.EOF
 			}
 			<-b.wsig
@@ -384,6 +384,7 @@ func (b *RingBuf) SkipContext(ctx context.Context, toSkip int) (int, error) {
 			notify(b.rsig)
 		} else {
 			if closed {
+				notify(b.wsig)
 				return skipped, io.EOF
 			}
 			select {
@@ -455,6 +456,7 @@ func (b *RingBuf) WriteLock() error {
 		<-b.lsig
 		if b.IsClosed() {
 			atomic.AddInt32(&b.wq, 1)
+			notify(b.lsig)
 			return io.EOF
 		}
 	}
@@ -486,6 +488,7 @@ func (b *RingBuf) WriteLockContext(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if b.IsClosed() {
+			notify(b.lsig)
 			atomic.AddInt32(&b.wq, 1)
 			return io.EOF
 		}

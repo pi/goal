@@ -10,7 +10,32 @@ import (
 	. "github.com/pi/goal/pipe/_testing"
 
 	"github.com/pi/goal/th"
+	"github.com/stretchr/testify/require"
 )
+
+func TestConnDeadlines(t *testing.T) {
+	c1, c2 := Conn(BS)
+	c1.SetReadDeadline(time.Now().Add(-time.Second))
+	c1.SetWriteDeadline(time.Now().Add(-time.Second))
+
+	_, err := c1.Read(make([]byte, 1))
+	checkTimeoutErr(t, err)
+	_, err = c1.Write(make([]byte, 1))
+	checkTimeoutErr(t, err)
+
+	c2.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
+	_, err = c2.Read(make([]byte, 1))
+	checkTimeoutErr(t, err)
+
+	c1.SetDeadline(time.Time{})
+	c2.SetReadDeadline(time.Now().Add(time.Millisecond))
+	n, err := c1.Write(make([]byte, 1))
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	n, err = c2.Read(make([]byte, 1))
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+}
 
 type connConstructor func(bufSize int) (net.Conn, net.Conn)
 
@@ -120,6 +145,9 @@ func TestMultiWritePipeConn(t *testing.T) {
 	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*NPIPES, elapsed), th.MemSince(sm))
 }
 
-func TestDeadlines(t *testing.T) {
-	t.Fail() //TODO
+func checkTimeoutErr(t *testing.T, err interface{}) {
+	require.NotNil(t, err)
+	ne, ok := err.(net.Error)
+	require.True(t, ok)
+	require.True(t, ne.Timeout())
 }

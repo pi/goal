@@ -1,13 +1,14 @@
 package pipe
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"math/rand"
-	"runtime"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -17,8 +18,6 @@ import (
 	"github.com/pi/goal/th"
 	"github.com/stretchr/testify/require"
 )
-
-var _ = runtime.NumCPU
 
 type TestWriterInterface interface {
 	io.Closer
@@ -40,7 +39,7 @@ type TestReaderInterface interface {
 	Skip(toSkip int) (int, error)
 	SkipWithContext(ctx context.Context, toSkip int) (int, error)
 	Peek(buf []byte) (int, error)
-	Pending() int
+	Len() int
 	ReadWait(n int) error
 	ReadWaitWithContext(ctx context.Context, n int) error
 }
@@ -199,6 +198,30 @@ func TestClose(t *testing.T) {
 	w.Close()
 }
 
+func TestDeadline(t *testing.T) {
+	checkTimeoutError := func(e error) {
+		require.Error(t, e)
+		te, ok := e.(net.Error)
+		require.True(t, ok)
+		require.True(t, te.Timeout())
+	}
+	r, w := Pipe(BS)
+
+	r.setDeadline(time.Now().Add(time.Second))
+	w.setDeadline(time.Now().Add(time.Second))
+	b, err := r.ReadByte()
+	checkTimeoutError(err)
+	require.EqualValues(t, 0, b)
+
+	r.setDeadline(time.Time{})
+	w.setDeadline(time.Time{})
+	err = w.WriteByte(1)
+	require.NoError(t, err)
+	b, err = r.ReadByte()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, b)
+}
+
 func psum(data []byte) (sum int) {
 	for _, p := range data {
 		sum += int(p)
@@ -334,6 +357,66 @@ func _TestMultiWriteMux(t *testing.T) {
 	wg.Wait()
 	elapsed := time.Since(st)
 	fmt.Printf("time spent: %v, %s, mem: %s\n", elapsed, XferSpeed(N*uint64(kNPIPES), elapsed), th.MemSince(sm))
+}
+
+func TestReadFrom(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		data := make([]byte, 8000)
+		rand.Read(data)
+		crc := crc32.ChecksumIEEE(data)
+
+		r, w := SyncPipe(256)
+		rc := make(chan []byte)
+		go func() {
+			w.ReadFrom(bytes.NewReader(data))
+			w.Close()
+		}()
+		go func() {
+			bw := bytes.NewBuffer(nil)
+			bb := make([]byte, 5)
+			for {
+				n, err := r.Read(bb)
+				if n > 0 {
+					bw.Write(bb[:n])
+				}
+				if err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+			rc <- bw.Bytes()
+		}()
+
+		rdata := <-rc
+
+		require.Equal(t, crc, crc32.ChecksumIEEE(rdata))
+		require.True(t, bytes.Equal(data, rdata))
+	}
+}
+
+func TestWriteTo(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		data := make([]byte, 9000)
+		rand.Read(data)
+		crc := crc32.ChecksumIEEE(data)
+		r, w := Pipe(8192)
+		w.Write(make([]byte, 1011))
+		r.Skip(1011)
+		go func() {
+			w.Write(data)
+			w.Close()
+		}()
+		rc := make(chan []byte)
+		go func() {
+			bw := bytes.NewBuffer(nil)
+			r.WriteTo(bw)
+			rc <- bw.Bytes()
+		}()
+		rdata := <-rc
+		require.Equal(t, crc, crc32.ChecksumIEEE(rdata))
+		require.True(t, bytes.Equal(data, rdata))
+	}
 }
 
 func multiWriteHelper(t *testing.T, NPIPES int, kN int) {

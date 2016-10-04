@@ -109,7 +109,7 @@ func (r *ringbuf) read(data []byte) (int, error) {
 			return 0, nil
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		err := r.lock()
 		if err != nil {
 			return 0, err
@@ -139,7 +139,7 @@ func (r *ringbuf) read(data []byte) (int, error) {
 			}
 			readed += nr
 			if closed {
-				if r.synchronized != 0 {
+				if r.synchronized {
 					r.unlock()
 				}
 				return readed, io.EOF
@@ -147,7 +147,7 @@ func (r *ringbuf) read(data []byte) (int, error) {
 			notify(r.rsig)
 		} else {
 			if closed {
-				if r.synchronized != 0 {
+				if r.synchronized {
 					r.unlock()
 				}
 				return readed, io.EOF
@@ -155,7 +155,7 @@ func (r *ringbuf) read(data []byte) (int, error) {
 			<-r.wsig
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		r.unlock()
 	}
 	return readed, nil

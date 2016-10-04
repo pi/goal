@@ -16,8 +16,12 @@ func (w *Writer) writeUnlocked(data []byte) (int, error) {
 		if w.IsClosed() {
 			return 0, io.EOF
 		} else {
-			return 0, nil
+			return 0, w.checkDeadline()
 		}
+	}
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		return 0, timeoutError
 	}
 	written := 0
 	for written < toWrite {
@@ -45,7 +49,11 @@ func (w *Writer) writeUnlocked(data []byte) (int, error) {
 				notify(w.rsig) // resume other writers (if any)
 				return written, io.EOF
 			}
-			<-w.rsig
+			select {
+			case <-w.rsig:
+			case <-timeoutChan:
+				return written, timeoutError
+			}
 		}
 	}
 	return toWrite, nil
@@ -60,6 +68,10 @@ func (w *Writer) writeUnlockedWithContext(ctx context.Context, data []byte) (int
 			return 0, nil
 		}
 	}
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		return 0, timeoutError
+	}
 	written := 0
 	for written < toWrite {
 		_, closed, head, sz := w.loadHeader()
@@ -87,6 +99,8 @@ func (w *Writer) writeUnlockedWithContext(ctx context.Context, data []byte) (int
 			}
 			select {
 			case <-w.rsig:
+			case <-timeoutChan:
+				return written, timeoutError
 			case <-ctx.Done():
 				return written, ctx.Err()
 			}
@@ -96,27 +110,35 @@ func (w *Writer) writeUnlockedWithContext(ctx context.Context, data []byte) (int
 }
 
 func (w *Writer) Write(data []byte) (int, error) {
-	toWrite := len(data)
-	if toWrite == 0 {
-		if w.IsClosed() {
-			return 0, io.EOF
-		} else {
-			return 0, nil
-		}
+	if w.IsClosed() {
+		return 0, io.EOF
 	}
 
-	if w.synchronized != 0 {
+	toWrite := len(data)
+	if toWrite == 0 {
+		return 0, nil
+	}
+
+	if w.synchronized {
 		err := w.lock()
 		if err != nil {
 			return 0, err
 		}
 	}
 
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		if w.synchronized {
+			w.unlock()
+		}
+		return 0, timeoutError
+	}
+
 	written := 0
 	for written < toWrite {
 		_, closed, head, sz := w.loadHeader()
 		if closed {
-			if w.synchronized != 0 {
+			if w.synchronized {
 				w.unlock()
 			}
 			return written, io.EOF
@@ -137,43 +159,57 @@ func (w *Writer) Write(data []byte) (int, error) {
 			notify(w.wsig)
 		} else {
 			if closed {
-				if w.synchronized != 0 {
+				if w.synchronized {
 					w.unlock()
 				}
 				notify(w.rsig) // resume other writers (if any)
 				return written, io.EOF
 			}
-			<-w.rsig
+			select {
+			case <-w.rsig:
+			case <-timeoutChan:
+				if w.synchronized {
+					w.unlock()
+				}
+				return written, timeoutError
+			}
 		}
 	}
-	if w.synchronized != 0 {
+	if w.synchronized {
 		w.unlock()
 	}
 	return toWrite, nil
 }
 
 func (w *Writer) WriteWithContext(ctx context.Context, data []byte) (int, error) {
+	if w.IsClosed() {
+		return 0, io.EOF
+	}
 	toWrite := len(data)
 	if toWrite == 0 {
-		if w.IsClosed() {
-			return 0, io.EOF
-		} else {
-			return 0, nil
-		}
+		return 0, nil
 	}
 
-	if w.synchronized != 0 {
+	if w.synchronized {
 		err := w.lockWithContext(ctx)
 		if err != nil {
 			return 0, err
 		}
 	}
 
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		if w.synchronized {
+			w.unlock()
+		}
+		return 0, timeoutError
+	}
+
 	written := 0
 	for written < toWrite {
 		_, closed, head, sz := w.loadHeader()
 		if closed {
-			if w.synchronized != 0 {
+			if w.synchronized {
 				w.unlock()
 			}
 			return written, io.EOF
@@ -194,7 +230,7 @@ func (w *Writer) WriteWithContext(ctx context.Context, data []byte) (int, error)
 			notify(w.wsig)
 		} else {
 			if closed {
-				if w.synchronized != 0 {
+				if w.synchronized {
 					w.unlock()
 				}
 				notify(w.rsig) // resume other writers (if any)
@@ -203,21 +239,30 @@ func (w *Writer) WriteWithContext(ctx context.Context, data []byte) (int, error)
 			select {
 			case <-w.rsig:
 			case <-ctx.Done():
-				if w.synchronized != 0 {
+				if w.synchronized {
 					w.unlock()
 				}
 				return written, ctx.Err()
+			case <-timeoutChan:
+				if w.synchronized {
+					w.unlock()
+				}
+				return written, timeoutError
 			}
 		}
 	}
-	if w.synchronized != 0 {
+	if w.synchronized {
 		w.unlock()
 	}
 	return toWrite, nil
 }
 
 func (w *Writer) WriteAll(chunks ...[]byte) (int64, error) {
-	if w.synchronized != 0 {
+	//TODO optimize
+	if w.IsClosed() {
+		return 0, io.EOF
+	}
+	if w.synchronized {
 		err := w.lock()
 		if err != nil {
 			return 0, err
@@ -228,20 +273,23 @@ func (w *Writer) WriteAll(chunks ...[]byte) (int64, error) {
 		n, err := w.writeUnlocked(data)
 		written += int64(n)
 		if err != nil {
-			if w.synchronized != 0 {
+			if w.synchronized {
 				w.unlock()
 			}
 			return written, err
 		}
 	}
-	if w.synchronized != 0 {
+	if w.synchronized {
 		w.unlock()
 	}
 	return written, nil
 }
 
 func (w *Writer) WriteAllWithContext(ctx context.Context, chunks ...[]byte) (int64, error) {
-	if w.synchronized != 0 {
+	if w.IsClosed() {
+		return 0, io.EOF
+	}
+	if w.synchronized {
 		err := w.lockWithContext(ctx)
 		if err != nil {
 			return 0, err
@@ -252,13 +300,13 @@ func (w *Writer) WriteAllWithContext(ctx context.Context, chunks ...[]byte) (int
 		n, err := w.writeUnlockedWithContext(ctx, data)
 		written += int64(n)
 		if err != nil {
-			if w.synchronized != 0 {
+			if w.synchronized {
 				w.unlock()
 			}
 			return written, err
 		}
 	}
-	if w.synchronized != 0 {
+	if w.synchronized {
 		w.unlock()
 	}
 	return written, nil
@@ -278,6 +326,10 @@ func (w *Writer) WriteWait(min int) error {
 	if min < 1 {
 		min = 1
 	}
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		return timeoutError
+	}
 	for {
 		_, closed, _, sz := w.loadHeader()
 		if closed {
@@ -287,7 +339,11 @@ func (w *Writer) WriteWait(min int) error {
 		if w.Cap()-sz >= min {
 			return nil
 		}
-		<-w.rsig
+		select {
+		case <-w.rsig:
+		case <-timeoutChan:
+			return timeoutError
+		}
 	}
 }
 
@@ -297,6 +353,10 @@ func (w *Writer) WriteWaitWithContext(ctx context.Context, min int) error {
 	}
 	if min < 1 {
 		min = 1
+	}
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		return timeoutError
 	}
 	for {
 		_, closed, _, sz := w.loadHeader()
@@ -311,40 +371,77 @@ func (w *Writer) WriteWaitWithContext(ctx context.Context, min int) error {
 		case <-w.rsig:
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-timeoutChan:
+			return timeoutError
 		}
 	}
 }
 
-func (w *Writer) ReadFrom(r io.Reader) (int64, error) {
-	if w.synchronized != 0 {
-		err := w.lock()
+func (w *Writer) ReadFrom(r io.Reader) (written int64, err error) {
+	if w.synchronized {
+		err = w.lock()
 		if err != nil {
 			return 0, err
 		}
 	}
-	var chunkArray [8192]byte
-	chunk := chunkArray[:]
-	readed := int64(0)
-	for {
-		n, err := r.Read(chunk)
-		if n > 0 {
-			n, werr := w.writeUnlocked(chunkArray[:n])
-			readed += int64(n)
-			if werr != nil {
-				if w.synchronized != 0 {
-					w.unlock()
-				}
-				return readed, werr
-			}
+	timeoutChan, exceed := w.timeoutChan()
+	if exceed {
+		if w.synchronized {
+			w.unlock()
 		}
-		if err != nil {
-			if w.synchronized != 0 {
+		return 0, timeoutError
+	}
+	for {
+		_, closed, head, sz := w.loadHeader()
+		if closed {
+			if w.synchronized {
 				w.unlock()
 			}
-			if err == io.EOF {
-				return readed, nil
+			return written, io.EOF
+		}
+		if (w.Cap() - sz) > 0 {
+			writePos := (head + sz) & w.mask
+			var nw int
+			if writePos < head {
+				// wrapped
+				nw, err = r.Read(w.mem[writePos:head])
 			} else {
-				return readed, err
+				var n1, n2 int
+				n1, err = r.Read(w.mem[writePos:])
+				if err == nil {
+					n2, err = r.Read(w.mem[:head])
+				}
+				nw = n1 + n2
+			}
+			if nw > 0 {
+				atomic.AddUint64(w.pbits, uint64(nw))
+				written += int64(nw)
+				notify(w.wsig)
+			}
+			if err != nil {
+				if err == io.EOF {
+					err = nil
+				}
+				if w.synchronized {
+					w.unlock()
+				}
+				return written, err
+			}
+		} else {
+			if closed {
+				if w.synchronized {
+					w.unlock()
+				}
+				notify(w.rsig) // resume other writers (if any)
+				return written, io.EOF
+			}
+			select {
+			case <-w.rsig:
+			case <-timeoutChan:
+				if w.synchronized {
+					w.unlock()
+				}
+				return written, timeoutError
 			}
 		}
 	}

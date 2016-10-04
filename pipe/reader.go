@@ -14,22 +14,31 @@ type Reader struct {
 func (r *Reader) Read(data []byte) (int, error) {
 	toRead := len(data)
 	if toRead == 0 {
-		if r.IsClosed() {
-			notify(r.wsig) // resume ohter readers (if any)
-			return 0, io.EOF
-		} else {
-			return 0, nil
-		}
+		return 0, r.checkDeadline()
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		err := r.lock()
 		if err != nil {
 			return 0, err
 		}
 	}
+	timeoutChan, exceed := r.timeoutChan()
+	if exceed {
+		if r.synchronized {
+			r.unlock()
+		}
+		return 0, timeoutError
+	}
 	readed := 0
 	for readed < toRead {
 		hs, closed, head, sz := r.loadHeader()
+		if closed && sz == 0 {
+			if r.synchronized {
+				r.unlock()
+			}
+			notify(r.wsig) // resume other readers (if any)
+			return readed, io.EOF
+		}
 		nr := minInt(sz, toRead-readed)
 		if nr > 0 {
 			if head > r.Cap()-nr {
@@ -50,25 +59,19 @@ func (r *Reader) Read(data []byte) (int, error) {
 				hs, closed, head, sz = r.loadHeader()
 			}
 			readed += nr
-			if closed {
-				if r.synchronized != 0 {
-					r.unlock()
-				}
-				return readed, io.EOF
-			}
 			notify(r.rsig)
 		} else {
-			if closed {
-				if r.synchronized != 0 {
+			select {
+			case <-r.wsig:
+			case <-timeoutChan:
+				if r.synchronized {
 					r.unlock()
 				}
-				notify(r.wsig) // resume other readers (if any)
-				return readed, io.EOF
+				return readed, timeoutError
 			}
-			<-r.wsig
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		r.unlock()
 	}
 	return readed, nil
@@ -77,22 +80,31 @@ func (r *Reader) Read(data []byte) (int, error) {
 func (r *Reader) ReadWithContext(ctx context.Context, data []byte) (int, error) {
 	toRead := len(data)
 	if toRead == 0 {
-		if r.IsClosed() {
-			notify(r.wsig) // resume ohter waiters (if any)
-			return 0, io.EOF
-		} else {
-			return 0, nil
-		}
+		return 0, r.checkDeadline()
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		err := r.lockWithContext(ctx)
 		if err != nil {
 			return 0, err
 		}
 	}
 	readed := 0
+	timeoutChan, exc := r.timeoutChan()
+	if exc {
+		if r.synchronized {
+			r.unlock()
+		}
+		return 0, timeoutError
+	}
 	for readed < toRead {
 		hs, closed, head, sz := r.loadHeader()
+		if closed && sz == 0 {
+			if r.synchronized {
+				r.unlock()
+			}
+			notify(r.wsig) // resume other readers (if any)
+			return readed, io.EOF
+		}
 		nr := minInt(sz, toRead-readed)
 		if nr > 0 {
 			if head > r.Cap()-nr {
@@ -116,31 +128,29 @@ func (r *Reader) ReadWithContext(ctx context.Context, data []byte) (int, error) 
 			readed += nr
 			notify(r.rsig)
 		} else {
-			if closed {
-				if r.synchronized != 0 {
-					r.unlock()
-				}
-				notify(r.wsig) // resume other readers (if any)
-				return readed, io.EOF
-			}
 			select {
 			case <-r.wsig:
 			case <-ctx.Done():
-				if r.synchronized != 0 {
+				if r.synchronized {
 					r.unlock()
 				}
 				return readed, ctx.Err()
+			case <-timeoutChan:
+				if r.synchronized {
+					r.unlock()
+				}
+				return readed, timeoutError
 			}
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		r.unlock()
 	}
 	return readed, nil
 }
 
 func (r *Reader) Peek(data []byte) (int, error) {
-	if r.synchronized != 0 {
+	if r.synchronized {
 		err := r.lock()
 		if err != nil {
 			return 0, err
@@ -160,7 +170,7 @@ func (r *Reader) Peek(data []byte) (int, error) {
 			copy(data, r.mem[head:head+nr])
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		r.unlock()
 	}
 	if closed {
@@ -176,15 +186,29 @@ func (r *Reader) Skip(toSkip int) (int, error) {
 		}
 		return 0, nil
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		err := r.lock()
 		if err != nil {
 			return 0, err
 		}
 	}
 	skipped := 0
+	timeoutChan, exceed := r.timeoutChan()
+	if exceed {
+		if r.synchronized {
+			r.unlock()
+		}
+		return 0, timeoutError
+	}
 	for skipped < toSkip {
 		hs, closed, head, sz := r.loadHeader()
+		if closed && sz == 0 {
+			if r.synchronized {
+				r.unlock()
+			}
+			notify(r.wsig) // resume ohter waiters (if any)
+			return skipped, io.EOF
+		}
 		n := minInt(sz, toSkip-skipped)
 		if n > 0 {
 			for {
@@ -199,17 +223,17 @@ func (r *Reader) Skip(toSkip int) (int, error) {
 			skipped += n
 			notify(r.rsig)
 		} else {
-			if closed {
-				if r.synchronized != 0 {
+			select {
+			case <-r.wsig:
+			case <-timeoutChan:
+				if r.synchronized {
 					r.unlock()
 				}
-				notify(r.wsig) // resume ohter waiters (if any)
-				return skipped, io.EOF
+				return skipped, timeoutError
 			}
-			<-r.wsig
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		r.unlock()
 	}
 	return skipped, nil
@@ -222,15 +246,29 @@ func (r *Reader) SkipWithContext(ctx context.Context, toSkip int) (int, error) {
 		}
 		return 0, nil
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		err := r.lockWithContext(ctx)
 		if err != nil {
 			return 0, err
 		}
 	}
 	skipped := 0
+	timeoutChan, exceed := r.timeoutChan()
+	if exceed {
+		if r.synchronized {
+			r.unlock()
+		}
+		return 0, timeoutError
+	}
 	for skipped < toSkip {
 		hs, closed, head, sz := r.loadHeader()
+		if closed && sz == 0 {
+			if r.synchronized {
+				r.unlock()
+			}
+			notify(r.wsig) // resume other readers (if any)
+			return skipped, io.EOF
+		}
 		n := minInt(sz, toSkip-skipped)
 		if n > 0 {
 			for {
@@ -245,28 +283,29 @@ func (r *Reader) SkipWithContext(ctx context.Context, toSkip int) (int, error) {
 			skipped += n
 			notify(r.rsig)
 		} else {
-			if closed {
-				if r.synchronized != 0 {
-					r.unlock()
-				}
-				notify(r.wsig) // resume other readers (if any)
-				return skipped, io.EOF
-			}
 			select {
 			case <-r.wsig:
 			case <-ctx.Done():
+				if r.synchronized {
+					r.unlock()
+				}
 				return skipped, ctx.Err()
+			case <-timeoutChan:
+				if r.synchronized {
+					r.unlock()
+				}
+				return skipped, timeoutError
 			}
 		}
 	}
-	if r.synchronized != 0 {
+	if r.synchronized {
 		r.unlock()
 	}
 	return skipped, nil
 }
 
-// Pending returns number of bytes availbale to immediate read
-func (r *Reader) Pending() int {
+// Len returns number of buffered bytes availbale to immediate read
+func (r *Reader) Len() int {
 	return int(atomic.LoadUint64(r.pbits) & uint64(low31bits))
 }
 
@@ -277,6 +316,10 @@ func (r *Reader) ReadWait(min int) error {
 	if min < 1 {
 		min = 1
 	}
+	timeoutChan, exceed := r.timeoutChan()
+	if exceed {
+		return timeoutError
+	}
 	for {
 		_, closed, _, sz := r.loadHeader()
 		if sz >= min {
@@ -286,7 +329,11 @@ func (r *Reader) ReadWait(min int) error {
 			notify(r.wsig) // resume other readers (if any)
 			return io.EOF
 		}
-		<-r.wsig
+		select {
+		case <-r.wsig:
+		case <-timeoutChan:
+			return timeoutError
+		}
 	}
 }
 
@@ -296,6 +343,10 @@ func (r *Reader) ReadWaitWithContext(ctx context.Context, min int) error {
 	}
 	if min < 1 {
 		min = 1
+	}
+	timeoutChan, exceed := r.timeoutChan()
+	if exceed {
+		return timeoutError
 	}
 	for {
 		_, closed, _, sz := r.loadHeader()
@@ -310,6 +361,8 @@ func (r *Reader) ReadWaitWithContext(ctx context.Context, min int) error {
 		case <-r.wsig:
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-timeoutChan:
+			return timeoutError
 		}
 	}
 }
@@ -320,24 +373,66 @@ func (r *Reader) ReadByte() (byte, error) {
 	return b[0], err
 }
 
-func (r *Reader) WriteTo(w io.Writer) (int64, error) {
-	var chunkArray [8192]byte
-	chunk := chunkArray[:]
-	written := int64(0)
-	for {
-		n, err := r.Read(chunk)
-		if n > 0 {
-			nw, werr := w.Write(chunkArray[:n])
-			written += int64(nw)
-			if werr != nil {
-				return written, werr
-			}
+func (r *Reader) WriteTo(w io.Writer) (readed int64, err error) {
+	if r.synchronized {
+		if err = r.lock(); err != nil {
+			return 0, err
 		}
-		if err != nil {
-			if err == io.EOF {
-				return written, nil
+	}
+	timeoutChan, exceed := r.timeoutChan()
+	if exceed {
+		if r.synchronized {
+			r.unlock()
+		}
+		return 0, timeoutError
+	}
+	for {
+		hs, closed, head, sz := r.loadHeader()
+		if closed && sz == 0 {
+			notify(r.wsig) // resume other readers
+			if r.synchronized {
+				r.unlock()
+			}
+			return readed, nil
+		}
+		if sz > 0 {
+			var n int
+			if head > r.Cap()-sz {
+				// wrapped
+				var n1, n2 int
+				n1, err := w.Write(r.mem[head:])
+				if err == nil {
+					n2, err = w.Write(r.mem[:sz-(r.Cap()-head)])
+				}
+				n = n1 + n2
 			} else {
-				return written, err
+				n, err = w.Write(r.mem[head : head+sz])
+			}
+			readed += int64(n)
+			for {
+				head = (head + n) & r.mask
+				sz -= n
+				if atomic.CompareAndSwapUint64(r.pbits, hs, (hs&headerFlagMask)|(uint64(head)<<32)|uint64(sz)) {
+					break
+				}
+				runtime.Gosched()
+				hs, closed, head, sz = r.loadHeader()
+			}
+			notify(r.rsig)
+			if err != nil {
+				if r.synchronized {
+					r.unlock()
+				}
+				return readed, err
+			}
+		} else {
+			select {
+			case <-r.wsig:
+			case <-timeoutChan:
+				if r.synchronized {
+					r.unlock()
+				}
+				return readed, timeoutError
 			}
 		}
 	}
