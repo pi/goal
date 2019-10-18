@@ -70,6 +70,7 @@ func inner(depth, iterations uint32) string {
 		a := bottomUpTree(pool, depth)
 		chk += itemCheck(a)
 	}
+	pool.Done()
 	return fmt.Sprintf("%d\t trees of depth %d\t check: %d", iterations, depth, chk)
 }
 
